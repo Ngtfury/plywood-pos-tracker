@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { IosSpinner } from "@/components/ui/IosSpinner";
+import { LicenseSettingsSection } from "@/licensing";
 
 interface SettingsProps {
   onDisconnect?: () => void;
@@ -141,6 +142,9 @@ export function Settings({ onDisconnect }: SettingsProps) {
         <p className="text-muted-foreground mt-1">Configure your production Supabase database connection, custom fields, and database operations.</p>
       </div>
       
+      {/* 0. SOFTWARE LICENSE & DEVICE SEAT */}
+      <LicenseSettingsSection />
+
       {/* 1. SUPABASE CONNECTION SETTINGS */}
       <Card>
         <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">

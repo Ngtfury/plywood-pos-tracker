@@ -10,8 +10,13 @@ import { Credits } from "./pages/credits/Credits";
 import { Settings } from "./pages/settings/Settings";
 import { Onboarding } from "./components/Onboarding";
 import { isSupabaseConfigured } from "./lib/supabase";
+import { LicenseProvider, ApplicationGate } from "./licensing";
 
-function App() {
+/**
+ * Existing ERP Application Shell.
+ * Unchanged ERP business logic and routing.
+ */
+function ERPApplication() {
   const [configured, setConfigured] = useState(() => isSupabaseConfigured());
 
   if (!configured) {
@@ -32,6 +37,19 @@ function App() {
         </Route>
       </Routes>
     </BrowserRouter>
+  );
+}
+
+/**
+ * Main Application Root with Licensing Security Gate.
+ */
+function App() {
+  return (
+    <LicenseProvider>
+      <ApplicationGate>
+        <ERPApplication />
+      </ApplicationGate>
+    </LicenseProvider>
   );
 }
 

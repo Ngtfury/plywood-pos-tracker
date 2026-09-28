@@ -1,8 +1,36 @@
+mod machine;
+mod licensing;
+
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+#[tauri::command]
+fn get_machine_id() -> Result<String, String> {
+    Ok(machine::get_stable_machine_id())
+}
+
+#[tauri::command]
+fn verify_license_signature(payload_json: String, signature_b64: String) -> Result<bool, String> {
+    licensing::verify_signature(&payload_json, &signature_b64)
+}
+
+#[tauri::command]
+fn save_license_data(token_json: String) -> Result<(), String> {
+    licensing::save_license(&token_json)
+}
+
+#[tauri::command]
+fn load_license_data() -> Result<Option<String>, String> {
+    licensing::load_license()
+}
+
+#[tauri::command]
+fn delete_license_data() -> Result<(), String> {
+    licensing::delete_license()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -102,7 +130,14 @@ CREATE TABLE settings (
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            get_machine_id,
+            verify_license_signature,
+            save_license_data,
+            load_license_data,
+            delete_license_data
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

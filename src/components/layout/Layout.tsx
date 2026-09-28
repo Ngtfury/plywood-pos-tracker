@@ -3,6 +3,7 @@ import { Sidebar } from "./Sidebar";
 import { QuickEntryModal } from "../QuickEntryModal";
 import { useStore } from "@/store";
 import { AnimatePresence, motion } from "framer-motion";
+import { OfflineIndicator } from "@/licensing";
 
 export function Layout() {
   const isQuickIncomeOpen = useStore(s => s.isQuickIncomeOpen);
@@ -14,7 +15,9 @@ export function Layout() {
   return (
     <div className="flex h-screen w-full bg-background font-sans">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto overflow-x-hidden relative">
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
+        <OfflineIndicator />
+        <main className="flex-1 overflow-y-auto overflow-x-hidden relative">
         <AnimatePresence>
           <motion.div 
             key={location.pathname}
@@ -28,6 +31,7 @@ export function Layout() {
           </motion.div>
         </AnimatePresence>
       </main>
+      </div>
       
       <QuickEntryModal 
         type="IN" 
