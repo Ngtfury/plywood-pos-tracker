@@ -57,3 +57,34 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ========================================================= */
+/* APPLE iOS ACTIVITY INDICATOR (12-BLADE ROTATING SPINNER)  */
+/* ========================================================= */
+@keyframes ios-spinner-fade {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.15;
+  }
+}
+
+.ios-spinner {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.ios-spinner-blade {
+  position: absolute;
+  left: 44.5%;
+  top: 0;
+  width: 11%;
+  height: 28%;
+  background-color: currentColor;
+  border-radius: 9999px;
+  transform-origin: center 178%;
+  animation: ios-spinner-fade 1s linear infinite;
+}
+

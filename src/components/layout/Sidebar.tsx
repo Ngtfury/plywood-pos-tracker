@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import { 
   LayoutDashboard, 
   ArrowRightLeft, 
+  HandCoins, 
   Users, 
   Tags, 
   BarChart3, 
@@ -16,6 +17,7 @@ import { useStore } from "@/store";
 const navItems = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Transactions", href: "/transactions", icon: ArrowRightLeft },
+  { name: "Credits", href: "/credits", icon: HandCoins },
   { name: "Entities", href: "/entities", icon: Users },
   { name: "Categories", href: "/categories", icon: Tags },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },

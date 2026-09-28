@@ -12,17 +12,24 @@ import {
   TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { IosSpinner, IosLoadingView, IosLoadingOverlay } from "@/components/ui/IosSpinner";
 
 export function Transactions() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [isDeleting, setIsDeleting] = useState(false);
   
   const refreshTrigger = useStore(s => s.refreshTrigger);
   const triggerRefresh = useStore(s => s.triggerRefresh);
   const setQuickExpenseOpen = useStore(s => s.setQuickExpenseOpen);
 
   useEffect(() => {
-    getTransactions().then(setTransactions).catch(console.error);
+    setLoading(true);
+    getTransactions()
+      .then(setTransactions)
+      .catch(console.error)
+      .finally(() => setLoading(false));
     setSelectedIds(new Set());
   }, [refreshTrigger]);
 
@@ -38,8 +45,15 @@ export function Transactions() {
 
   const handleDelete = async () => {
     if (!window.confirm(`Are you sure you want to delete ${selectedIds.size} transaction(s)?`)) return;
-    await deleteTransactions(Array.from(selectedIds));
-    triggerRefresh();
+    setIsDeleting(true);
+    try {
+      await deleteTransactions(Array.from(selectedIds));
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Failed to delete transactions: " + (err?.message || err));
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   return (
@@ -53,9 +67,18 @@ export function Transactions() {
         </div>
         <div className="flex gap-2">
           {selectedIds.size > 0 && (
-            <Button variant="destructive" onClick={handleDelete}>
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete ({selectedIds.size})
+            <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
+              {isDeleting ? (
+                <span className="flex items-center gap-1.5">
+                  <IosSpinner size="sm" className="text-white" />
+                  Deleting...
+                </span>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete ({selectedIds.size})
+                </>
+              )}
             </Button>
           )}
           <button 
@@ -67,7 +90,12 @@ export function Transactions() {
         </div>
       </div>
 
-      <div className="rounded-md border bg-card overflow-x-auto">
+      <div className="rounded-md border bg-card overflow-x-auto relative min-h-[300px]">
+        {isDeleting && <IosLoadingOverlay text="Deleting transactions..." />}
+
+        {loading ? (
+          <IosLoadingView text="Loading transactions..." minHeight="300px" />
+        ) : (
         <Table>
           <TableHeader>
             <TableRow>
@@ -89,14 +117,15 @@ export function Transactions() {
               <TableHead>Type</TableHead>
               <TableHead>Category</TableHead>
               <TableHead>Entity</TableHead>
-              <TableHead>Amount</TableHead>
+              <TableHead>Cash Paid</TableHead>
+              <TableHead>Credit / Balance</TableHead>
               <TableHead>Notes</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {transactions.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="h-24 text-center">
+                <TableCell colSpan={8} className="h-24 text-center">
                   No transactions found.
                 </TableCell>
               </TableRow>
@@ -127,6 +156,18 @@ export function Transactions() {
                   <TableCell className="font-medium">
                     ₹{txn.amount.toLocaleString()}
                   </TableCell>
+                  <TableCell>
+                    {txn.balance_due != null && txn.balance_due > 0 ? (
+                      <div className="text-xs space-y-0.5">
+                        <div className="text-muted-foreground">Bill: ₹{(txn.total_amount || txn.amount).toLocaleString()}</div>
+                        <Badge variant="outline" className="border-amber-500/40 text-amber-400 bg-amber-500/10 text-[10px]">
+                          Due: ₹{txn.balance_due.toLocaleString()}
+                        </Badge>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">Settled</span>
+                    )}
+                  </TableCell>
                   <TableCell className="text-muted-foreground">
                     {txn.notes || "—"}
                   </TableCell>
@@ -135,6 +176,7 @@ export function Transactions() {
             )}
           </TableBody>
         </Table>
+        )}
       </div>
     </div>
   );

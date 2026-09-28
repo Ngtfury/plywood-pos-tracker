@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { IosSpinner, IosLoadingView, IosLoadingOverlay } from "@/components/ui/IosSpinner";
 
 export function Categories() {
   const [categories, setCategories] = useState<Category[]>([]);
@@ -36,13 +37,19 @@ export function Categories() {
   const [type, setType] = useState<"IN" | "OUT" | "BOTH">("OUT");
   const [color, setColor] = useState("#94a3b8");
   const [loading, setLoading] = useState(false);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   
   const refreshTrigger = useStore(s => s.refreshTrigger);
   const triggerRefresh = useStore(s => s.triggerRefresh);
 
   useEffect(() => {
-    getCategories().then(setCategories).catch(console.error);
+    setPageLoading(true);
+    getCategories()
+      .then(setCategories)
+      .catch(console.error)
+      .finally(() => setPageLoading(false));
     setSelectedIds(new Set());
   }, [refreshTrigger]);
 
@@ -58,8 +65,15 @@ export function Categories() {
 
   const handleDelete = async () => {
     if (!window.confirm(`Are you sure you want to delete ${selectedIds.size} category(s)?`)) return;
-    await deleteCategories(Array.from(selectedIds));
-    triggerRefresh();
+    setIsDeleting(true);
+    try {
+      await deleteCategories(Array.from(selectedIds));
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Failed to delete categories: " + (err?.message || err));
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const handleSave = async () => {
@@ -90,9 +104,18 @@ export function Categories() {
         </div>
         <div className="flex gap-2">
           {selectedIds.size > 0 && (
-            <Button variant="destructive" onClick={handleDelete}>
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete ({selectedIds.size})
+            <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
+              {isDeleting ? (
+                <span className="flex items-center gap-1.5">
+                  <IosSpinner size="sm" className="text-white" />
+                  Deleting...
+                </span>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete ({selectedIds.size})
+                </>
+              )}
             </Button>
           )}
           <Button onClick={() => setIsOpen(true)}>
@@ -101,7 +124,12 @@ export function Categories() {
         </div>
       </div>
 
-      <div className="rounded-md border bg-card">
+      <div className="rounded-md border bg-card relative min-h-[300px]">
+        {isDeleting && <IosLoadingOverlay text="Deleting categories..." />}
+
+        {pageLoading ? (
+          <IosLoadingView text="Loading categories..." minHeight="300px" />
+        ) : (
         <Table>
           <TableHeader>
             <TableRow>
@@ -156,6 +184,7 @@ export function Categories() {
             )}
           </TableBody>
         </Table>
+        )}
       </div>
 
       <Dialog open={isOpen} onOpenChange={setIsOpen}>
@@ -201,7 +230,16 @@ export function Categories() {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setIsOpen(false)}>Cancel</Button>
-              <Button type="button" onClick={handleSave} disabled={loading || !name}>Save</Button>
+              <Button type="button" onClick={handleSave} disabled={loading || !name}>
+                {loading ? (
+                  <span className="flex items-center gap-1.5">
+                    <IosSpinner size="sm" className="text-white" />
+                    Saving...
+                  </span>
+                ) : (
+                  "Save"
+                )}
+              </Button>
             </DialogFooter>
           </div>
         </DialogContent>

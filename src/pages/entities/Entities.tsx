@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { getEntities, addEntity, deleteEntities, Entity } from "@/lib/db/queries";
+import { useNavigate } from "react-router-dom";
+import { getEntities, addEntity, deleteEntities, getEntityCreditLedgers, Entity, EntityCreditLedger } from "@/lib/db/queries";
 import { useStore } from "@/store";
 import { 
   Table, 
@@ -19,22 +20,34 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Trash2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Trash2, HandCoins } from "lucide-react";
+import { IosSpinner, IosLoadingView, IosLoadingOverlay } from "@/components/ui/IosSpinner";
 
 export function Entities() {
+  const navigate = useNavigate();
   const [entities, setEntities] = useState<Entity[]>([]);
+  const [ledgers, setLedgers] = useState<EntityCreditLedger[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [name, setName] = useState("");
   const [type, setType] = useState("Customer");
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   
   const refreshTrigger = useStore(s => s.refreshTrigger);
   const triggerRefresh = useStore(s => s.triggerRefresh);
 
   useEffect(() => {
-    getEntities().then(setEntities).catch(console.error);
+    setPageLoading(true);
+    Promise.all([
+      getEntities().then(setEntities),
+      getEntityCreditLedgers('ALL').then(setLedgers)
+    ])
+      .catch(console.error)
+      .finally(() => setPageLoading(false));
     setSelectedIds(new Set());
   }, [refreshTrigger]);
 
@@ -50,8 +63,15 @@ export function Entities() {
 
   const handleDelete = async () => {
     if (!window.confirm(`Are you sure you want to delete ${selectedIds.size} entit(ies)?`)) return;
-    await deleteEntities(Array.from(selectedIds));
-    triggerRefresh();
+    setIsDeleting(true);
+    try {
+      await deleteEntities(Array.from(selectedIds));
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Failed to delete entities: " + (err?.message || err));
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const handleSave = async () => {
@@ -81,9 +101,18 @@ export function Entities() {
         </div>
         <div className="flex gap-2">
           {selectedIds.size > 0 && (
-            <Button variant="destructive" onClick={handleDelete}>
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete ({selectedIds.size})
+            <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
+              {isDeleting ? (
+                <span className="flex items-center gap-1.5">
+                  <IosSpinner size="sm" className="text-white" />
+                  Deleting...
+                </span>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete ({selectedIds.size})
+                </>
+              )}
             </Button>
           )}
           <Button onClick={() => setIsOpen(true)}>
@@ -92,7 +121,12 @@ export function Entities() {
         </div>
       </div>
 
-      <div className="rounded-md border bg-card">
+      <div className="rounded-md border bg-card relative min-h-[300px]">
+        {isDeleting && <IosLoadingOverlay text="Deleting entities..." />}
+
+        {pageLoading ? (
+          <IosLoadingView text="Loading contacts & ledgers..." minHeight="300px" />
+        ) : (
         <Table>
           <TableHeader>
             <TableRow>
@@ -113,34 +147,67 @@ export function Entities() {
               <TableHead>Name</TableHead>
               <TableHead>Type</TableHead>
               <TableHead>Phone</TableHead>
+              <TableHead>Credit Balance</TableHead>
+              <TableHead className="text-right">Ledger</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {entities.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} className="h-24 text-center">
+                <TableCell colSpan={6} className="h-24 text-center">
                   No entities found.
                 </TableCell>
               </TableRow>
             ) : (
-              entities.map((ent) => (
-                <TableRow key={ent.id}>
-                  <TableCell>
-                    <input 
-                      type="checkbox" 
-                      className="rounded border-gray-300"
-                      checked={selectedIds.has(ent.id)}
-                      onChange={() => toggleSelect(ent.id)}
-                    />
-                  </TableCell>
-                  <TableCell className="font-medium">{ent.name}</TableCell>
-                  <TableCell>{ent.type}</TableCell>
-                  <TableCell>{ent.phone || "—"}</TableCell>
-                </TableRow>
-              ))
+              entities.map((ent) => {
+                const ledger = ledgers.find(l => l.entity.id === ent.id);
+                const rec = ledger ? ledger.totalReceivable : 0;
+                const pay = ledger ? ledger.totalPayable : 0;
+
+                return (
+                  <TableRow key={ent.id}>
+                    <TableCell>
+                      <input 
+                        type="checkbox" 
+                        className="rounded border-gray-300"
+                        checked={selectedIds.has(ent.id)}
+                        onChange={() => toggleSelect(ent.id)}
+                      />
+                    </TableCell>
+                    <TableCell className="font-medium">{ent.name}</TableCell>
+                    <TableCell>{ent.type}</TableCell>
+                    <TableCell>{ent.phone || "—"}</TableCell>
+                    <TableCell>
+                      {rec > 0 ? (
+                        <Badge variant="outline" className="border-amber-500/40 text-amber-400 bg-amber-500/10">
+                          To Get: ₹{rec.toLocaleString()}
+                        </Badge>
+                      ) : pay > 0 ? (
+                        <Badge variant="outline" className="border-rose-500/40 text-rose-400 bg-rose-500/10">
+                          To Give: ₹{pay.toLocaleString()}
+                        </Badge>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Settled</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button 
+                        variant="ghost" 
+                        size="sm" 
+                        onClick={() => navigate("/credits")}
+                        className="h-8 text-xs gap-1 text-primary hover:text-primary"
+                      >
+                        <HandCoins className="h-3.5 w-3.5" />
+                        View Credit
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
             )}
           </TableBody>
         </Table>
+        )}
       </div>
 
       <Dialog open={isOpen} onOpenChange={setIsOpen}>
@@ -176,7 +243,16 @@ export function Entities() {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setIsOpen(false)}>Cancel</Button>
-              <Button type="button" onClick={handleSave} disabled={loading || !name}>Save</Button>
+              <Button type="button" onClick={handleSave} disabled={loading || !name}>
+                {loading ? (
+                  <span className="flex items-center gap-1.5">
+                    <IosSpinner size="sm" className="text-white" />
+                    Saving...
+                  </span>
+                ) : (
+                  "Save"
+                )}
+              </Button>
             </DialogFooter>
           </div>
         </DialogContent>

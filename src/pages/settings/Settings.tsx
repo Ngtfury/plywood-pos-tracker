@@ -9,21 +9,34 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { seedDatabase } from "@/lib/db/seed";
 import { clearDb } from "@/lib/db/index";
 import { getCustomFields, addCustomField, deleteCustomFields, CustomFieldDef } from "@/lib/db/queries";
 import { 
   getStoredCredentials, 
-  resetSupabaseClient, 
+  markSupabaseConfigured,
   testConnection, 
-  clearStoredCredentials 
+  disconnectSupabase 
 } from "@/lib/supabase";
 import { useStore } from "@/store";
-import { Trash2, Database, Globe, Key, CheckCircle2, XCircle, RefreshCw, RotateCcw } from "lucide-react";
+import { 
+  Trash2, 
+  Database, 
+  Globe, 
+  Key, 
+  CheckCircle2, 
+  XCircle, 
+  RefreshCw, 
+  LogOut, 
+  AlertTriangle 
+} from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { IosSpinner } from "@/components/ui/IosSpinner";
 
-export function Settings() {
-  const [seeding, setSeeding] = useState(false);
+interface SettingsProps {
+  onDisconnect?: () => void;
+}
+
+export function Settings({ onDisconnect }: SettingsProps) {
   const [fields, setFields] = useState<CustomFieldDef[]>([]);
   const [newFieldName, setNewFieldName] = useState("");
   const [newFieldType, setNewFieldType] = useState<"text" | "number">("text");
@@ -34,6 +47,8 @@ export function Settings() {
   const [supabaseUrl, setSupabaseUrl] = useState(initialCreds.url);
   const [supabaseKey, setSupabaseKey] = useState(initialCreds.key);
   const [testingConn, setTestingConn] = useState(false);
+  const [savingConn, setSavingConn] = useState(false);
+  const [wiping, setWiping] = useState(false);
   const [connStatus, setConnStatus] = useState<{ success: boolean; message: string } | null>(null);
 
   const triggerRefresh = useStore(s => s.triggerRefresh);
@@ -57,91 +72,103 @@ export function Settings() {
   };
 
   const handleSaveSupabaseConfig = async () => {
+    setSavingConn(true);
     try {
-      resetSupabaseClient(supabaseUrl, supabaseKey);
-      setConnStatus({ success: true, message: 'Saved and reconnected to new database successfully!' });
+      const res = await testConnection(supabaseUrl, supabaseKey);
+      if (!res.success) {
+        setConnStatus(res);
+        setSavingConn(false);
+        return;
+      }
+      markSupabaseConfigured(supabaseUrl, supabaseKey);
+      setConnStatus({ success: true, message: 'Saved and verified database connection successfully!' });
       triggerRefresh();
     } catch (e: any) {
       setConnStatus({ success: false, message: 'Failed to update credentials: ' + e.message });
+    } finally {
+      setSavingConn(false);
     }
   };
 
-  const handleResetSupabaseConfig = () => {
-    clearStoredCredentials();
-    const defaults = getStoredCredentials();
-    setSupabaseUrl(defaults.url);
-    setSupabaseKey(defaults.key);
-    resetSupabaseClient(defaults.url, defaults.key);
-    setConnStatus({ success: true, message: 'Reset database credentials to default .env values.' });
-    triggerRefresh();
-  };
-
-  const handleSeed = async () => {
-    setSeeding(true);
-    try {
-      await seedDatabase();
-      triggerRefresh();
-      alert("Database seeded successfully with production demo data!");
-    } catch (e: any) {
-      console.error(e);
-      alert("Error seeding database: " + (e.message || e));
-    } finally {
-      setSeeding(false);
+  const handleDisconnect = () => {
+    if (!window.confirm("Are you sure you want to disconnect from this database and return to onboarding?")) {
+      return;
+    }
+    disconnectSupabase();
+    if (onDisconnect) {
+      onDisconnect();
+    } else {
+      window.location.reload();
     }
   };
 
   const handleClean = async () => {
-    if (!window.confirm("Are you sure you want to completely erase all tables in Supabase? This cannot be undone.")) return;
+    const confirmed = window.confirm(
+      "DANGER: Are you sure you want to completely wipe all tables in Supabase? All transactions, installments, entities, and custom fields will be permanently deleted."
+    );
+    if (!confirmed) return;
+
+    setWiping(true);
     try {
-      await clearDb();
+      await clearDb(false);
       triggerRefresh();
-      alert("Database wiped clean!");
+      alert("Database wiped clean! All tables are now empty and ready for fresh production entries.");
     } catch (e: any) {
       console.error(e);
       alert("Error wiping database: " + (e.message || e));
+    } finally {
+      setWiping(false);
     }
   };
 
   const handleAddField = async () => {
-    if (!newFieldName) return;
-    await addCustomField({ name: newFieldName, type: newFieldType, apply_to: newFieldApplyTo });
+    if (!newFieldName.trim()) return;
+    await addCustomField({ name: newFieldName.trim(), type: newFieldType, apply_to: newFieldApplyTo });
     setNewFieldName("");
     triggerRefresh();
   };
 
   const handleDeleteField = async (id: string) => {
-    if (!window.confirm("Delete this custom field? Existing data in transactions will be orphaned.")) return;
+    if (!window.confirm("Delete this custom field? Existing data stored in transactions will be orphaned.")) return;
     await deleteCustomFields([id]);
     triggerRefresh();
   };
 
   return (
     <div className="space-y-6">
-      <h2 className="text-3xl font-bold tracking-tight">Settings</h2>
-      <p className="text-muted-foreground">Configure your Supabase database connection, custom fields, and data tools.</p>
+      <div>
+        <h2 className="text-3xl font-bold tracking-tight">Settings</h2>
+        <p className="text-muted-foreground mt-1">Configure your production Supabase database connection, custom fields, and database operations.</p>
+      </div>
       
       {/* 1. SUPABASE CONNECTION SETTINGS */}
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <CardTitle className="flex items-center gap-2">
               <Database className="h-5 w-5 text-emerald-400" />
               Supabase Production Database
             </CardTitle>
-            <CardDescription>
-              Connect to your live Supabase cloud database instance. Changes take effect immediately.
+            <CardDescription className="mt-1">
+              Live cloud database credentials. Modifying credentials updates sync immediately.
             </CardDescription>
           </div>
-          <Button variant="outline" size="sm" onClick={handleResetSupabaseConfig} title="Reset to .env defaults">
-            <RotateCcw className="h-4 w-4 mr-2" />
-            Reset Defaults
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={handleDisconnect} 
+            title="Disconnect current database and re-run onboarding flow"
+            className="text-zinc-400 hover:text-white border-zinc-700 hover:bg-zinc-800 self-start sm:self-auto cursor-pointer"
+          >
+            <LogOut className="h-4 w-4 mr-2 text-rose-400" />
+            Disconnect &amp; Re-run Onboarding
           </Button>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label className="flex items-center gap-1.5">
-                <Globe className="h-4 w-4 text-muted-foreground" />
+                <Globe className="h-4 w-4 text-emerald-400" />
                 Supabase Project URL
               </Label>
               <Input 
@@ -152,20 +179,20 @@ export function Settings() {
             </div>
             <div className="space-y-2">
               <Label className="flex items-center gap-1.5">
-                <Key className="h-4 w-4 text-muted-foreground" />
+                <Key className="h-4 w-4 text-emerald-400" />
                 Publishable / Anon API Key
               </Label>
               <Input 
                 type="password"
                 value={supabaseKey}
                 onChange={e => setSupabaseKey(e.target.value)}
-                placeholder="sb_publishable_..."
+                placeholder="sb_publishable_... or eyJhbGci..."
               />
             </div>
           </div>
 
           {connStatus && (
-            <div className={`p-3 rounded-lg flex items-center gap-2 text-sm ${
+            <div className={`p-3 rounded-lg flex items-center gap-2.5 text-xs sm:text-sm ${
               connStatus.success 
                 ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-800/60' 
                 : 'bg-rose-950/40 text-rose-300 border border-rose-800/60'
@@ -179,13 +206,38 @@ export function Settings() {
             </div>
           )}
 
-          <div className="flex gap-3 pt-2">
-            <Button onClick={handleSaveSupabaseConfig} className="bg-emerald-600 hover:bg-emerald-500 text-white">
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Save & Connect Database
+          <div className="flex flex-wrap gap-3 pt-2">
+            <Button 
+              onClick={handleSaveSupabaseConfig} 
+              disabled={savingConn || !supabaseUrl || !supabaseKey}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
+            >
+              {savingConn ? (
+                <span className="flex items-center gap-2">
+                  <IosSpinner size="sm" className="text-white" />
+                  Saving &amp; Testing...
+                </span>
+              ) : (
+                <span className="flex items-center gap-2">
+                  <RefreshCw className="h-4 w-4" />
+                  Save &amp; Connect Database
+                </span>
+              )}
             </Button>
-            <Button variant="secondary" onClick={handleTestConnection} disabled={testingConn}>
-              {testingConn ? "Testing..." : "Test Connection"}
+            <Button 
+              variant="secondary" 
+              onClick={handleTestConnection} 
+              disabled={testingConn || !supabaseUrl || !supabaseKey}
+              className="cursor-pointer"
+            >
+              {testingConn ? (
+                <span className="flex items-center gap-2">
+                  <IosSpinner size="sm" />
+                  Testing...
+                </span>
+              ) : (
+                "Test Connection"
+              )}
             </Button>
           </div>
         </CardContent>
@@ -196,7 +248,7 @@ export function Settings() {
         <CardHeader>
           <CardTitle>Custom Transaction Fields</CardTitle>
           <CardDescription>
-            Define custom fields that will appear when adding income or expense entries (e.g. "Invoice Number", "Thickness").
+            Define custom fields that will appear when adding income or expense entries (e.g. "Invoice Number", "Sheet Thickness", "Vehicle No").
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -224,13 +276,13 @@ export function Settings() {
               <Select value={newFieldApplyTo} onValueChange={(v: "IN" | "OUT" | "BOTH") => setNewFieldApplyTo(v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="BOTH">Income & Expense</SelectItem>
+                  <SelectItem value="BOTH">Income &amp; Expense</SelectItem>
                   <SelectItem value="IN">Income Only</SelectItem>
                   <SelectItem value="OUT">Expense Only</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <Button onClick={handleAddField} disabled={!newFieldName}>Add Field</Button>
+            <Button onClick={handleAddField} disabled={!newFieldName.trim()}>Add Field</Button>
           </div>
 
           <div className="pt-4 space-y-2">
@@ -255,21 +307,44 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      {/* 3. DATA & SEED TOOLS */}
-      <Card>
+      {/* 3. DATABASE MANAGEMENT (PRODUCTION) */}
+      <Card className="border-rose-950/40 bg-zinc-950/40">
         <CardHeader>
-          <CardTitle>Database Management</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-rose-400">
+            <AlertTriangle className="h-5 w-5 text-rose-500" />
+            Danger Zone • Database Management
+          </CardTitle>
           <CardDescription>
-            Populate your Supabase tables with demo transactions or clear all table data.
+            Permanently erase all transaction data, installment repayments, entities, and custom fields across your Supabase tables.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <div className="p-4 rounded-xl border border-rose-900/40 bg-rose-950/20 text-xs text-rose-300 space-y-1">
+            <p className="font-semibold">Cascade Wipe Safety:</p>
+            <p className="text-zinc-400">
+              Wiping executes safe foreign-key deletion in cascade order: <br />
+              <code className="text-zinc-300">credit_payments → transactions → custom_fields → entities → categories</code>.
+            </p>
+          </div>
+
           <div className="flex gap-4">
-            <Button onClick={handleSeed} disabled={seeding}>
-              {seeding ? "Seeding..." : "Seed Demo Database"}
-            </Button>
-            <Button onClick={handleClean} variant="destructive">
-              Wipe Database Tables
+            <Button 
+              onClick={handleClean} 
+              variant="destructive"
+              disabled={wiping}
+              className="bg-rose-600 hover:bg-rose-700 text-white cursor-pointer"
+            >
+              {wiping ? (
+                <span className="flex items-center gap-2">
+                  <IosSpinner size="sm" className="text-white" />
+                  Wiping All Tables...
+                </span>
+              ) : (
+                <span className="flex items-center gap-2">
+                  <Trash2 className="h-4 w-4" />
+                  Wipe Database Tables
+                </span>
+              )}
             </Button>
           </div>
         </CardContent>

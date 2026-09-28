@@ -30,11 +30,13 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { IosLoadingView } from "@/components/ui/IosSpinner";
 
 export function Analytics() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [entities, setEntities] = useState<Entity[]>([]);
+  const [pageLoading, setPageLoading] = useState(true);
   
   // Filters
   const [search, setSearch] = useState("");
@@ -47,9 +49,14 @@ export function Analytics() {
   const refreshTrigger = useStore(s => s.refreshTrigger);
 
   useEffect(() => {
-    getTransactions().then(setTransactions).catch(console.error);
-    getCategories().then(setCategories).catch(console.error);
-    getEntities().then(setEntities).catch(console.error);
+    setPageLoading(true);
+    Promise.all([
+      getTransactions().then(setTransactions),
+      getCategories().then(setCategories),
+      getEntities().then(setEntities)
+    ])
+      .catch(console.error)
+      .finally(() => setPageLoading(false));
   }, [refreshTrigger]);
 
   const clearFilters = () => {
@@ -254,7 +261,10 @@ export function Analytics() {
         </Card>
       </div>
 
-      <div className="rounded-md border bg-card">
+      <div className="rounded-md border bg-card relative min-h-[300px]">
+        {pageLoading ? (
+          <IosLoadingView text="Loading transaction analytics..." minHeight="300px" />
+        ) : (
         <Table>
           <TableHeader>
             <TableRow>
@@ -297,6 +307,7 @@ export function Analytics() {
             )}
           </TableBody>
         </Table>
+        )}
       </div>
     </div>
   );
