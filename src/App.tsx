@@ -13,6 +13,7 @@ import { isSupabaseConfigured } from "./lib/supabase";
 import { LicenseProvider, ApplicationGate } from "./licensing";
 import { UserAuthProvider, useUserAuth } from "./auth/UserAuthContext";
 import { AuthGate } from "./components/auth/AuthGate";
+import { useStore } from "./store";
 
 /**
  * Existing ERP Application Shell with User Password Authentication.
@@ -23,7 +24,14 @@ function ERPApplication() {
 
   // 1. Supabase database onboarding (if not yet configured)
   if (!configured) {
-    return <Onboarding onComplete={() => setConfigured(true)} />;
+    return (
+      <Onboarding
+        onComplete={() => {
+          setConfigured(true);
+          useStore.getState().triggerRefresh();
+        }}
+      />
+    );
   }
 
   // 2. User Authentication Gate (Password required on each app launch)

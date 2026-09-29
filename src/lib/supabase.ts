@@ -5,9 +5,9 @@ const STORAGE_ANON_KEY = 'plywood_supabase_anon_key';
 const STORAGE_CONFIGURED_KEY = 'plywood_supabase_configured';
 
 export function getStoredCredentials(): { url: string; key: string } {
-  const url = localStorage.getItem(STORAGE_URL_KEY) || import.meta.env.VITE_SUPABASE_URL || '';
-  const key = localStorage.getItem(STORAGE_ANON_KEY) || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
-  return { url: url.trim(), key: key.trim() };
+  const url = (localStorage.getItem(STORAGE_URL_KEY) || '').trim();
+  const key = (localStorage.getItem(STORAGE_ANON_KEY) || '').trim();
+  return { url, key };
 }
 
 export function isSupabaseConfigured(): boolean {
@@ -32,6 +32,8 @@ export function clearStoredCredentials() {
   localStorage.removeItem(STORAGE_ANON_KEY);
   localStorage.removeItem(STORAGE_CONFIGURED_KEY);
   supabaseInstance = null;
+  currentClientUrl = '';
+  currentClientKey = '';
 }
 
 export function disconnectSupabase() {
@@ -39,15 +41,22 @@ export function disconnectSupabase() {
 }
 
 let supabaseInstance: SupabaseClient | null = null;
+let currentClientUrl = '';
+let currentClientKey = '';
 
 export function getSupabase(): SupabaseClient {
-  if (!supabaseInstance) {
-    const { url, key } = getStoredCredentials();
+  const { url, key } = getStoredCredentials();
+
+  // If credentials changed or instance doesn't match active credentials, recreate client
+  if (!supabaseInstance || currentClientUrl !== url || currentClientKey !== key) {
     if (!url || !key) {
-      // Fallback placeholder client to prevent unhandled crashes during initial render before onboarding
       supabaseInstance = createClient('https://placeholder.supabase.co', 'placeholder');
+      currentClientUrl = '';
+      currentClientKey = '';
     } else {
       supabaseInstance = createClient(url, key);
+      currentClientUrl = url;
+      currentClientKey = key;
     }
   }
   return supabaseInstance;
@@ -58,10 +67,17 @@ export function resetSupabaseClient(url?: string, key?: string): SupabaseClient 
     saveStoredCredentials(url, key);
   }
   const creds = getStoredCredentials();
-  if (creds.url && creds.key) {
-    supabaseInstance = createClient(creds.url, creds.key);
+  const effectiveUrl = (url || creds.url || '').trim();
+  const effectiveKey = (key || creds.key || '').trim();
+
+  if (effectiveUrl && effectiveKey) {
+    supabaseInstance = createClient(effectiveUrl, effectiveKey);
+    currentClientUrl = effectiveUrl;
+    currentClientKey = effectiveKey;
   } else {
     supabaseInstance = createClient('https://placeholder.supabase.co', 'placeholder');
+    currentClientUrl = '';
+    currentClientKey = '';
   }
   return supabaseInstance;
 }

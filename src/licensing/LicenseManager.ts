@@ -164,14 +164,7 @@ class LicenseManager {
       await saveStoredLicense(token);
       this.currentToken = token;
 
-      // Ensure Supabase database onboarding is presented immediately after license activation
-      try {
-        localStorage.removeItem("plywood_supabase_configured");
-      } catch (e) {
-        // ignore in non-browser env
-      }
-
-      console.log("[Licensing] License activated successfully on device. Transitioning to database setup.");
+      console.log("[Licensing] License activated successfully on device.");
       this.setState("LICENSE_ACTIVE");
       this.startBackgroundValidationTimer();
       return { success: true, message: "License activated successfully!" };

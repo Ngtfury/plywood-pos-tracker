@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { IosSpinner } from "@/components/ui/IosSpinner";
-import { testConnection, markSupabaseConfigured, getStoredCredentials } from "@/lib/supabase";
+import { testConnection, markSupabaseConfigured } from "@/lib/supabase";
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -139,9 +139,9 @@ ON CONFLICT (id) DO NOTHING;`;
 
 export function Onboarding({ onComplete }: OnboardingProps) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
-  const initialCreds = getStoredCredentials();
-  const [url, setUrl] = useState(initialCreds.url);
-  const [key, setKey] = useState(initialCreds.key);
+  // Always start with empty credentials so user explicitly enters their own Supabase database
+  const [url, setUrl] = useState("");
+  const [key, setKey] = useState("");
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState<{ success: boolean; message: string; tablesExist?: boolean } | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
@@ -461,7 +461,10 @@ export function Onboarding({ onComplete }: OnboardingProps) {
               </div>
 
               <Button
-                onClick={onComplete}
+                onClick={() => {
+                  markSupabaseConfigured(url.trim(), key.trim());
+                  onComplete();
+                }}
                 className="w-full h-11 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-950 transition-all cursor-pointer flex items-center justify-center gap-2 group"
               >
                 <span>Launch Dashboard</span>

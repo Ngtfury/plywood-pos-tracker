@@ -107,6 +107,8 @@ export function Settings({ onDisconnect }: SettingsProps) {
       return;
     }
     disconnectSupabase();
+    setSupabaseUrl("");
+    setSupabaseKey("");
     if (onDisconnect) {
       onDisconnect();
     } else {
