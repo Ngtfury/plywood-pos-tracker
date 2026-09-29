@@ -8,11 +8,12 @@ import {
   BarChart3, 
   Settings,
   PlusCircle,
-  MinusCircle
+  MinusCircle,
+  Lock
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-
 import { useStore } from "@/store";
+import { useUserAuth } from "@/auth/UserAuthContext";
 
 const navItems = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -27,6 +28,7 @@ const navItems = [
 export function Sidebar() {
   const setQuickIncomeOpen = useStore(s => s.setQuickIncomeOpen);
   const setQuickExpenseOpen = useStore(s => s.setQuickExpenseOpen);
+  const { lock } = useUserAuth();
 
   return (
     <div className="flex h-screen w-64 flex-col border-r bg-card px-3 py-4">
@@ -70,6 +72,18 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
+
+      {/* Lock Application Footer Button */}
+      <div className="pt-3 border-t border-border/60">
+        <button
+          onClick={lock}
+          className="flex w-full items-center gap-3 rounded-md px-4 py-2 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-rose-400 transition-colors cursor-pointer"
+          title="Lock ERP Application"
+        >
+          <Lock className="h-4 w-4" />
+          <span>Lock Application</span>
+        </button>
+      </div>
     </div>
   );
 }

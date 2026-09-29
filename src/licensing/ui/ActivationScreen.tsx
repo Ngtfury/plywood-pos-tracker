@@ -112,10 +112,10 @@ export function ActivationScreen() {
             <div className="p-4 mb-5 rounded-2xl bg-rose-950/40 border border-rose-800 text-rose-200 space-y-2 text-xs">
               <div className="flex items-center gap-2 font-semibold text-rose-300">
                 <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>License Unavailable</span>
+                <span>License Revoked</span>
               </div>
               <p className="text-zinc-300 leading-relaxed">
-                Your organization's ERP license is no longer active or was revoked by the system administrator.
+                Your organization's ERP license has been revoked by the system administrator. The application is locked. Please contact your administrator or enter a valid license key below.
               </p>
             </div>
           )}

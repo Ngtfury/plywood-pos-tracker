@@ -94,17 +94,10 @@ class LicenseManager {
         return this.state;
       }
 
-      // 4. Check whether periodic online validation is due (> 24 hours)
-      const lastValidated = new Date(stored.last_validated_at || 0);
-      const hoursSinceValidation = (now.getTime() - lastValidated.getTime()) / (1000 * 60 * 60);
-
-      if (hoursSinceValidation >= 24) {
-        console.log("[Licensing] Periodic online validation due, attempting server sync...");
-        await this.validateOnline(false);
-      } else {
-        console.log("[Licensing] Local license verified. Launching ERP application.");
-        this.setState("LICENSE_ACTIVE");
-      }
+      // 4. Always verify license status with licensing authority on every application launch
+      // If the license has been revoked, expired, or deactivated on the server, the ERP locks immediately.
+      console.log("[Licensing] App launch: Verifying license status with authority...");
+      await this.validateOnline(false);
 
       this.startBackgroundValidationTimer();
       return this.state;
@@ -211,6 +204,11 @@ class LicenseManager {
       });
 
       if (!res.success) {
+        // Explicit backend rejection -> permanently clear stored license so it cannot be used offline
+        await clearStoredLicense();
+        this.currentToken = null;
+        this.stopBackgroundValidationTimer();
+
         // Explicit backend rejection
         if (res.status === "REVOKED") {
           this.setState("LICENSE_REVOKED", res.message || "Your license has been revoked.");
@@ -254,6 +252,11 @@ class LicenseManager {
     } catch (err: any) {
       // Server down, network timeout, or offline
       console.warn("[Licensing] Server unreachable during validation. Evaluating offline grace period.");
+
+      if (!this.currentToken) {
+        this.setState("ACTIVATION_REQUIRED");
+        return { success: false, message: "No active license found." };
+      }
 
       const now = new Date();
       const offlineUntil = new Date(this.currentToken.payload.offline_until);
@@ -328,10 +331,10 @@ class LicenseManager {
 
   private startBackgroundValidationTimer() {
     this.stopBackgroundValidationTimer();
-    // Check every 6 hours
+    // Periodically re-verify every 30 minutes while the application remains open
     this.validationIntervalId = setInterval(() => {
       this.validateOnline(false).catch(console.error);
-    }, 6 * 60 * 60 * 1000);
+    }, 30 * 60 * 1000);
   }
 
   private stopBackgroundValidationTimer() {

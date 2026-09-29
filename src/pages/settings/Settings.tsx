@@ -27,11 +27,13 @@ import {
   XCircle, 
   RefreshCw, 
   LogOut, 
-  AlertTriangle 
+  AlertTriangle,
+  Lock
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { IosSpinner } from "@/components/ui/IosSpinner";
 import { LicenseSettingsSection } from "@/licensing";
+import { useUserAuth } from "@/auth/UserAuthContext";
 
 interface SettingsProps {
   onDisconnect?: () => void;
@@ -42,6 +44,15 @@ export function Settings({ onDisconnect }: SettingsProps) {
   const [newFieldName, setNewFieldName] = useState("");
   const [newFieldType, setNewFieldType] = useState<"text" | "number">("text");
   const [newFieldApplyTo, setNewFieldApplyTo] = useState<"IN" | "OUT" | "BOTH">("BOTH");
+
+  // User Auth & Master Password state
+  const { lock, changePassword } = useUserAuth();
+  const [showPasswordChange, setShowPasswordChange] = useState(false);
+  const [currentPass, setCurrentPass] = useState("");
+  const [newPass, setNewPass] = useState("");
+  const [confirmPass, setConfirmPass] = useState("");
+  const [passSubmitting, setPassSubmitting] = useState(false);
+  const [passFeedback, setPassFeedback] = useState<{ success: boolean; message: string } | null>(null);
 
   // Supabase connection state
   const initialCreds = getStoredCredentials();
@@ -122,6 +133,33 @@ export function Settings({ onDisconnect }: SettingsProps) {
     }
   };
 
+  const handleChangePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPassFeedback(null);
+
+    if (newPass !== confirmPass) {
+      setPassFeedback({ success: false, message: "New passwords do not match." });
+      return;
+    }
+
+    if (newPass.length < 4) {
+      setPassFeedback({ success: false, message: "New password must be at least 4 characters long." });
+      return;
+    }
+
+    setPassSubmitting(true);
+    const res = await changePassword(currentPass, newPass);
+    setPassSubmitting(false);
+
+    setPassFeedback(res);
+    if (res.success) {
+      setCurrentPass("");
+      setNewPass("");
+      setConfirmPass("");
+      setTimeout(() => setShowPasswordChange(false), 2500);
+    }
+  };
+
   const handleAddField = async () => {
     if (!newFieldName.trim()) return;
     await addCustomField({ name: newFieldName.trim(), type: newFieldType, apply_to: newFieldApplyTo });
@@ -144,6 +182,110 @@ export function Settings({ onDisconnect }: SettingsProps) {
       
       {/* 0. SOFTWARE LICENSE & DEVICE SEAT */}
       <LicenseSettingsSection />
+
+      {/* 0.5. APPLICATION SECURITY & MASTER PASSWORD */}
+      <Card className="border-emerald-950/40 bg-zinc-950/30">
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Lock className="h-5 w-5 text-emerald-400" />
+              Master Access Password &amp; Lock
+            </CardTitle>
+            <CardDescription className="mt-1">
+              Secures your POS &amp; ERP application. The master password must be entered each time the application starts.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={lock}
+              className="text-zinc-300 hover:text-white border-zinc-700 hover:bg-zinc-800 cursor-pointer"
+            >
+              <Lock className="h-3.5 w-3.5 mr-1.5 text-emerald-400" />
+              Lock App Now
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setShowPasswordChange(!showPasswordChange);
+                setPassFeedback(null);
+              }}
+              className="cursor-pointer"
+            >
+              {showPasswordChange ? "Cancel" : "Change Password"}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {passFeedback && (
+            <div
+              className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                passFeedback.success
+                  ? "bg-emerald-950/40 border border-emerald-800 text-emerald-300"
+                  : "bg-amber-950/40 border border-amber-800 text-amber-300"
+              }`}
+            >
+              <span>{passFeedback.message}</span>
+            </div>
+          )}
+
+          {showPasswordChange && (
+            <form onSubmit={handleChangePasswordSubmit} className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/50 space-y-3 text-xs max-w-lg">
+              <div className="space-y-1">
+                <Label className="text-xs">Current Master Password</Label>
+                <Input
+                  type="password"
+                  value={currentPass}
+                  onChange={(e) => setCurrentPass(e.target.value)}
+                  placeholder="Enter current password"
+                  required
+                  className="h-9 text-xs"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">New Password</Label>
+                  <Input
+                    type="password"
+                    value={newPass}
+                    onChange={(e) => setNewPass(e.target.value)}
+                    placeholder="At least 4 chars"
+                    required
+                    className="h-9 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Confirm New Password</Label>
+                  <Input
+                    type="password"
+                    value={confirmPass}
+                    onChange={(e) => setConfirmPass(e.target.value)}
+                    placeholder="Confirm new password"
+                    required
+                    className="h-9 text-xs"
+                  />
+                </div>
+              </div>
+
+              <Button
+                type="submit"
+                disabled={passSubmitting || !currentPass || !newPass}
+                className="h-8 text-xs bg-emerald-600 hover:bg-emerald-500 text-white mt-2 cursor-pointer"
+              >
+                {passSubmitting ? "Updating..." : "Save New Password"}
+              </Button>
+            </form>
+          )}
+
+          <div className="text-xs text-zinc-400 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span>Master access protection is active. Encrypted locally with salted SHA-256.</span>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* 1. SUPABASE CONNECTION SETTINGS */}
       <Card>
