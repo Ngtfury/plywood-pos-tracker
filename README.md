@@ -101,3 +101,22 @@ This verifies:
 ## Backend API Specification
 
 See [docs/licensing-api.md](docs/licensing-api.md) for the complete REST contract, endpoints (`/activate`, `/validate`, `/deactivate`), and signature implementation examples for backend engineers.
+
+## Plywood ERP MVP setup
+
+The original five tables are preserved and must be created first:
+
+1. Run `supabase_schema.sql` in the Supabase SQL Editor if the legacy schema is not already present.
+2. Run `supabase/migrations/004_plywood_erp_mvp.sql`.
+3. Do not run `002_extend_plywood_erp.sql` or `003_harden_and_fix_erp.sql` for a new database; the MVP migration is self-contained and corrected.
+
+The MVP migration is additive. It does not delete, recreate, truncate, backfill, or convert data in `categories`, `entities`, `custom_fields`, `transactions`, or `credit_payments`.
+
+After applying the SQL, start the frontend with:
+
+```bash
+npm install
+npm run dev -- --host 127.0.0.1
+```
+
+The development server uses the Vite/Tauri port configured in `vite.config.ts` (normally `http://127.0.0.1:1420`).

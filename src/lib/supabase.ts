@@ -103,18 +103,21 @@ export async function testConnection(
     }
 
     const tempClient = createClient(testUrl, testKey);
-    const { error } = await tempClient.from('categories').select('id', { count: 'exact', head: true });
+    const requiredTables = ['categories', 'entities', 'transactions', 'business_entities', 'products', 'vouchers', 'journal_entries'];
+    const missingTables: string[] = [];
+    for (const table of requiredTables) {
+      const { error: tableError } = await tempClient.from(table).select('*', { count: 'exact', head: true });
+      if (tableError?.code === '42P01' || tableError?.code === 'PGRST205') missingTables.push(table);
+      else if (tableError) return { success: false, message: tableError.message };
+    }
 
-    if (error) {
+    if (missingTables.length > 0) {
       // PostgREST error 42P01: relation "categories" does not exist
-      if (error.code === '42P01') {
-        return { 
-          success: true, 
-          message: 'Connected to Supabase! Note: Database schema tables are not created yet. Please execute the SQL script in your Supabase SQL editor.',
-          tablesExist: false
-        };
-      }
-      return { success: false, message: error.message };
+      return {
+        success: true,
+        message: `Connected, but the MVP ERP schema is incomplete. Missing: ${missingTables.join(', ')}. Apply supabase/migrations/004_plywood_erp_mvp.sql.`,
+        tablesExist: false
+      };
     }
 
     return { 
