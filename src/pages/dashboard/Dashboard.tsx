@@ -7,7 +7,20 @@ import { getTransactions, Transaction } from "@/lib/db/queries";
 import { useStore } from "@/store";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { IosLoadingView } from "@/components/ui/IosSpinner";
-import { ArrowDownLeft, ArrowUpRight, HandCoins, ArrowRight, Calendar } from "lucide-react";
+import {
+  ArrowDownLeft,
+  ArrowUpRight,
+  HandCoins,
+  ArrowRight,
+  Calendar,
+  TrendingUp,
+  Percent,
+  Scale,
+  ShieldCheck,
+  Building2,
+} from "lucide-react";
+import { BusinessEntitySelector } from "@/components/erp/BusinessEntitySelector";
+import { getPnlSummary, getVouchers } from "@/lib/db/accounting";
 
 interface ChartData {
   date: string;
@@ -28,16 +41,71 @@ export function Dashboard() {
   const [selectedMonth, setSelectedMonth] = useState<string>("ALL");
   const [loading, setLoading] = useState(true);
   const refreshTrigger = useStore(s => s.refreshTrigger);
+  const selectedEntityId = useStore(s => s.selectedBusinessEntityId);
+
+  // Accounting P&L and Balance Sheet Metrics
+  const [pnlData, setPnlData] = useState<{
+    totalSales: number;
+    totalPurchase: number;
+    totalExpenses: number;
+    grossProfit: number;
+    netProfit: number;
+  }>({
+    totalSales: 0,
+    totalPurchase: 0,
+    totalExpenses: 0,
+    grossProfit: 0,
+    netProfit: 0,
+  });
+
+  const [outstandingPayable, setOutstandingPayable] = useState<number>(0);
+  const [outstandingReceivable, setOutstandingReceivable] = useState<number>(0);
 
   useEffect(() => {
     setLoading(true);
-    getTransactions()
-      .then(txns => {
+
+    // Calculate date range for P&L query if month is selected
+    let fromDate: string | undefined = undefined;
+    let toDate: string | undefined = undefined;
+    if (selectedMonth !== "ALL") {
+      const [yearStr, monthStr] = selectedMonth.split("-");
+      const y = parseInt(yearStr, 10);
+      const m = parseInt(monthStr, 10);
+      fromDate = `${y}-${String(m).padStart(2, "0")}-01T00:00:00Z`;
+      const lastDay = new Date(y, m, 0).getDate();
+      toDate = `${y}-${String(m).padStart(2, "0")}-${lastDay}T23:59:59Z`;
+    }
+
+    Promise.all([
+      getTransactions(),
+      getPnlSummary({
+        businessEntityId: selectedEntityId || undefined,
+        fromDate,
+        toDate,
+      }),
+      getVouchers({
+        voucherType: "purchase",
+        paymentStatus: "unpaid",
+        businessEntityId: selectedEntityId || undefined,
+      }),
+      getVouchers({
+        voucherType: "sales",
+        paymentStatus: "unpaid",
+        businessEntityId: selectedEntityId || undefined,
+      }),
+    ])
+      .then(([txns, pnl, unpaidPur, unpaidSal]) => {
         setAllTransactions(txns);
+        setPnlData(pnl);
+
+        const payables = unpaidPur.reduce((s, v) => s + (Number(v.balance_due) || 0), 0);
+        const receivables = unpaidSal.reduce((s, v) => s + (Number(v.balance_due) || 0), 0);
+        setOutstandingPayable(payables);
+        setOutstandingReceivable(receivables);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [refreshTrigger]);
+  }, [refreshTrigger, selectedMonth, selectedEntityId]);
 
   // Extract unique months present in entered transaction data
   const availableMonths = useMemo<MonthItem[]>(() => {
@@ -142,6 +210,32 @@ export function Dashboard() {
     };
   }, [displayedTxns]);
 
+  // Accounting Ratios (Gross Profit %, Net Profit %, Debt Ratio %)
+  const accountingKPIs = useMemo(() => {
+    const netSales = pnlData.totalSales;
+    const grossProfit = pnlData.grossProfit;
+    const netProfit = pnlData.netProfit;
+
+    const grossProfitMargin = netSales > 0 ? (grossProfit / netSales) * 100 : 0;
+    const netProfitMargin = netSales > 0 ? (netProfit / netSales) * 100 : 0;
+
+    // Debt Ratio % = Total Liabilities / Total Assets * 100
+    // Assets: Receivables + Estimated working liquid cash (min 1000 to avoid / 0)
+    // Liabilities: Payables
+    const totalAssets = Math.max(1000, outstandingReceivable + stats.totalIn);
+    const totalLiabilities = outstandingPayable;
+    const debtRatio = (totalLiabilities / totalAssets) * 100;
+
+    return {
+      grossProfitMargin: Math.round(grossProfitMargin * 10) / 10,
+      netProfitMargin: Math.round(netProfitMargin * 10) / 10,
+      debtRatio: Math.min(100, Math.round(debtRatio * 10) / 10),
+      netSales,
+      grossProfit,
+      netProfit,
+    };
+  }, [pnlData, outstandingPayable, outstandingReceivable, stats]);
+
   // Compute Chart Data for AreaChart
   const chartData = useMemo<ChartData[]>(() => {
     if (displayedTxns.length === 0) return [];
@@ -224,13 +318,18 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
-      {/* Dashboard Heading & Dynamic Month Filter Buttons */}
+      {/* Dashboard Heading, Operating Entity Selector & Dynamic Month Filter Buttons */}
       <div className="space-y-3">
-        <div>
-          <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
-          <p className="text-muted-foreground mt-1">
-            Overview of your financial position and cash flow metrics.
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
+            <p className="text-muted-foreground mt-1">
+              Overview of your financial position, liquid cash flow, and GAAP double-entry metrics.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <BusinessEntitySelector />
+          </div>
         </div>
 
         {/* Dynamic Month Selector Buttons - Only for months present in data */}
@@ -400,6 +499,106 @@ export function Dashboard() {
             </div>
           </CardContent>
         </Card>
+      </div>
+
+      {/* NEW MODULE: ENTERPRISE ACCOUNTING FINANCIAL KPIS */}
+      <div className="space-y-3 pt-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-emerald-400" />
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+              Accounting Financial Indicators (Accrual &amp; GAAP)
+            </h3>
+          </div>
+          <Link to="/reports" className="text-xs text-primary hover:underline flex items-center gap-1 font-medium">
+            <span>View Full Financials</span>
+            <ArrowRight className="h-3 w-3" />
+          </Link>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {/* KPI 1: Gross Profit % */}
+          <Card className="border-blue-500/30 bg-blue-500/5">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1.5">
+              <div>
+                <CardTitle className="text-sm font-medium">Gross Profit %</CardTitle>
+                <span className="text-[10px] text-muted-foreground font-normal">Gross Profit / Net Sales</span>
+              </div>
+              <Percent className="h-4 w-4 text-blue-400" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-blue-400">
+                {accountingKPIs.grossProfitMargin}%
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1 flex justify-between">
+                <span>Gross Profit:</span>
+                <span className="font-semibold text-foreground">₹{accountingKPIs.grossProfit.toLocaleString()}</span>
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* KPI 2: Net Profit % */}
+          <Card className="border-emerald-500/30 bg-emerald-500/5">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1.5">
+              <div>
+                <CardTitle className="text-sm font-medium">Net Profit %</CardTitle>
+                <span className="text-[10px] text-muted-foreground font-normal">Net Profit / Net Sales</span>
+              </div>
+              <TrendingUp className="h-4 w-4 text-emerald-400" />
+            </CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-bold ${accountingKPIs.netProfitMargin >= 0 ? "text-emerald-400" : "text-rose-500"}`}>
+                {accountingKPIs.netProfitMargin}%
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1 flex justify-between">
+                <span>Accounting Net:</span>
+                <span className={`font-semibold ${accountingKPIs.netProfit >= 0 ? "text-foreground" : "text-rose-400"}`}>
+                  ₹{accountingKPIs.netProfit.toLocaleString()}
+                </span>
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* KPI 3: Debt Ratio % */}
+          <Card className="border-purple-500/30 bg-purple-500/5">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1.5">
+              <div>
+                <CardTitle className="text-sm font-medium">Debt Ratio %</CardTitle>
+                <span className="text-[10px] text-muted-foreground font-normal">Total Liabilities / Assets</span>
+              </div>
+              <Scale className="h-4 w-4 text-purple-400" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-purple-400">
+                {accountingKPIs.debtRatio}%
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1 flex justify-between">
+                <span>Unsettled Payables:</span>
+                <span className="font-semibold text-foreground">₹{outstandingPayable.toLocaleString()}</span>
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* KPI 4: Invoiced Sales Revenue */}
+          <Card className="border-border">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1.5">
+              <div>
+                <CardTitle className="text-sm font-medium">Invoiced Revenue</CardTitle>
+                <span className="text-[10px] text-muted-foreground font-normal">Posted Sales Vouchers</span>
+              </div>
+              <Building2 className="h-4 w-4 text-primary" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">
+                ₹{accountingKPIs.netSales.toLocaleString()}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1 flex justify-between">
+                <span>Material Cost:</span>
+                <span className="font-semibold text-rose-400">₹{pnlData.totalPurchase.toLocaleString()}</span>
+              </p>
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
       {/* Cash Flow Chart & Recent Activity */}
