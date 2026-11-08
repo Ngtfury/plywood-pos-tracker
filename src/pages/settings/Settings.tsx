@@ -28,12 +28,19 @@ import {
   RefreshCw, 
   LogOut, 
   AlertTriangle,
-  Lock
+  Lock,
+  Check,
+  Copy,
+  ExternalLink,
+  ShieldCheck,
+  Layers
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { IosSpinner } from "@/components/ui/IosSpinner";
 import { LicenseSettingsSection } from "@/licensing";
 import { useUserAuth } from "@/auth/UserAuthContext";
+import { checkSchemaHealth, applyMasterSchema, SchemaHealthResult } from "@/lib/db/schemaSync";
+import { MASTER_SCHEMA_SQL } from "@/lib/db/masterSchemaSql";
 
 interface SettingsProps {
   onDisconnect?: () => void;
@@ -62,6 +69,16 @@ export function Settings({ onDisconnect }: SettingsProps) {
   const [savingConn, setSavingConn] = useState(false);
   const [wiping, setWiping] = useState(false);
   const [connStatus, setConnStatus] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Schema health & sync state
+  const [schemaHealth, setSchemaHealth] = useState<SchemaHealthResult | null>(null);
+  const [checkingSchema, setCheckingSchema] = useState(false);
+  const [syncingSchema, setSyncingSchema] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<{ success: boolean; message: string } | null>(null);
+  const [copiedSchemaSql, setCopiedSchemaSql] = useState(false);
+
+  const projectRef = supabaseUrl ? supabaseUrl.replace(/^https?:\/\//, '').split('.')[0] : '';
+  const sqlEditorUrl = projectRef && projectRef !== 'placeholder' ? `https://supabase.com/dashboard/project/${projectRef}/sql/new` : 'https://supabase.com/dashboard';
 
   const triggerRefresh = useStore(s => s.triggerRefresh);
   const refreshTrigger = useStore(s => s.refreshTrigger);
@@ -114,6 +131,43 @@ export function Settings({ onDisconnect }: SettingsProps) {
     } else {
       window.location.reload();
     }
+  };
+
+  const handleCheckSchema = async () => {
+    setCheckingSchema(true);
+    setSyncFeedback(null);
+    try {
+      const res = await checkSchemaHealth();
+      setSchemaHealth(res);
+    } catch (e: any) {
+      setSyncFeedback({ success: false, message: e.message || 'Failed to check schema health.' });
+    } finally {
+      setCheckingSchema(false);
+    }
+  };
+
+  const handleApplyMasterSchema = async () => {
+    setSyncingSchema(true);
+    setSyncFeedback(null);
+    try {
+      const res = await applyMasterSchema();
+      setSyncFeedback(res);
+      const health = await checkSchemaHealth();
+      setSchemaHealth(health);
+      if (res.success) {
+        triggerRefresh();
+      }
+    } catch (e: any) {
+      setSyncFeedback({ success: false, message: e.message || 'Schema sync failed.' });
+    } finally {
+      setSyncingSchema(false);
+    }
+  };
+
+  const handleCopySchemaSql = () => {
+    navigator.clipboard.writeText(MASTER_SCHEMA_SQL);
+    setCopiedSchemaSql(true);
+    setTimeout(() => setCopiedSchemaSql(false), 2500);
   };
 
   const handleClean = async () => {
@@ -388,6 +442,144 @@ export function Settings({ onDisconnect }: SettingsProps) {
               )}
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* 1.5. DATABASE SCHEMA INTEGRITY & MASTER SYNC */}
+      <Card className="border-indigo-950/40 bg-zinc-950/30">
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Layers className="h-5 w-5 text-indigo-400" />
+              Database Master Schema Integrity
+            </CardTitle>
+            <CardDescription className="mt-1">
+              Validates that your Supabase database has all 24 ERP tables, indexes, constraints, and stored procedures from <code className="text-zinc-300">supabase.sql</code>.
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCheckSchema}
+              disabled={checkingSchema || syncingSchema}
+              className="text-zinc-300 hover:text-white border-zinc-700 hover:bg-zinc-800 cursor-pointer"
+            >
+              {checkingSchema ? (
+                <span className="flex items-center gap-1.5">
+                  <IosSpinner size="sm" />
+                  Checking Schema...
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5">
+                  <RefreshCw className="h-3.5 w-3.5 text-indigo-400" />
+                  Check Schema Status
+                </span>
+              )}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCopySchemaSql}
+              className="text-zinc-300 hover:text-white border-zinc-700 hover:bg-zinc-800 cursor-pointer"
+            >
+              {copiedSchemaSql ? (
+                <span className="flex items-center gap-1.5 text-emerald-400">
+                  <Check className="h-3.5 w-3.5" />
+                  Copied supabase.sql!
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5">
+                  <Copy className="h-3.5 w-3.5 text-zinc-400" />
+                  Copy supabase.sql
+                </span>
+              )}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {schemaHealth && (
+            <div className={`p-4 rounded-xl border text-xs sm:text-sm space-y-2 ${
+              schemaHealth.isFit
+                ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-300'
+                : 'bg-amber-950/30 border-amber-800/60 text-amber-300'
+            }`}>
+              <div className="flex items-center gap-2 font-medium">
+                {schemaHealth.isFit ? (
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                ) : (
+                  <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+                )}
+                <span>
+                  {schemaHealth.isFit 
+                    ? `Schema is fully up to date (${24 - schemaHealth.missingTables.length}/24 tables verified)` 
+                    : `Schema requires attention: ${schemaHealth.summary}`}
+                </span>
+              </div>
+              {!schemaHealth.isFit && (
+                <div className="space-y-1 text-xs text-amber-200/80">
+                  {schemaHealth.missingTables.length > 0 && (
+                    <p><span className="font-semibold text-amber-300">Missing tables:</span> {schemaHealth.missingTables.join(', ')}</p>
+                  )}
+                  {schemaHealth.missingColumns.length > 0 && (
+                    <p><span className="font-semibold text-amber-300">Missing columns:</span> {schemaHealth.missingColumns.join(', ')}</p>
+                  )}
+                  {schemaHealth.missingFunctions.length > 0 && (
+                    <p><span className="font-semibold text-amber-300">Missing functions:</span> {schemaHealth.missingFunctions.join(', ')}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {syncFeedback && (
+            <div className={`p-3 rounded-lg flex items-center gap-2 text-xs ${
+              syncFeedback.success
+                ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-800/60'
+                : 'bg-rose-950/40 text-rose-300 border border-rose-800/60'
+            }`}>
+              {syncFeedback.success ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+              ) : (
+                <XCircle className="h-4 w-4 text-rose-400 shrink-0" />
+              )}
+              <span>{syncFeedback.message}</span>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3 pt-1">
+            <Button
+              onClick={handleApplyMasterSchema}
+              disabled={syncingSchema || checkingSchema}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer"
+            >
+              {syncingSchema ? (
+                <span className="flex items-center gap-2">
+                  <IosSpinner size="sm" className="text-white" />
+                  Applying Master Schema...
+                </span>
+              ) : (
+                <span className="flex items-center gap-2">
+                  <ShieldCheck className="h-4 w-4" />
+                  Auto-Sync Master Schema (supabase.sql)
+                </span>
+              )}
+            </Button>
+            {sqlEditorUrl && (
+              <a
+                href={sqlEditorUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors"
+              >
+                <ExternalLink className="h-3.5 w-3.5 text-zinc-400" />
+                Open Supabase SQL Editor
+              </a>
+            )}
+          </div>
+          <p className="text-[11px] text-zinc-400">
+            Note: All statements in <code className="text-zinc-300">supabase.sql</code> are failsafe (<code className="text-zinc-300">CREATE IF NOT EXISTS</code>, <code className="text-zinc-300">ADD COLUMN IF NOT EXISTS</code>, <code className="text-zinc-300">ON CONFLICT DO NOTHING</code>) and can be executed repeatedly without data loss.
+          </p>
         </CardContent>
       </Card>
 

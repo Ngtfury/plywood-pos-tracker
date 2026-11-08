@@ -13,6 +13,7 @@ import { isSupabaseConfigured } from "./lib/supabase";
 import { LicenseProvider, ApplicationGate } from "./licensing";
 import { UserAuthProvider, useUserAuth } from "./auth/UserAuthContext";
 import { AuthGate } from "./components/auth/AuthGate";
+import { SchemaIntegrityGate } from "./components/schema/SchemaIntegrityGate";
 import { useStore } from "./store";
 
 // ERP Module Pages
@@ -55,38 +56,40 @@ function ERPApplication() {
     return <AuthGate />;
   }
 
-  // 3. Authenticated ERP Routes
+  // 3. Schema Integrity Gate (Verified on startup right after master password unlock)
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Layout />}>
-          {/* ── Existing Routes (PRESERVED) ── */}
-          <Route index element={<Dashboard />} />
-          <Route path="transactions" element={<Transactions />} />
-          <Route path="credits" element={<Credits />} />
-          <Route path="entities" element={<Entities />} />
-          <Route path="categories" element={<Categories />} />
-          <Route path="analytics" element={<Analytics />} />
-          <Route path="settings" element={<Settings onDisconnect={() => setConfigured(false)} />} />
+    <SchemaIntegrityGate>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Layout />}>
+            {/* ── Existing Routes (PRESERVED) ── */}
+            <Route index element={<Dashboard />} />
+            <Route path="transactions" element={<Transactions />} />
+            <Route path="credits" element={<Credits />} />
+            <Route path="entities" element={<Entities />} />
+            <Route path="categories" element={<Categories />} />
+            <Route path="analytics" element={<Analytics />} />
+            <Route path="settings" element={<Settings onDisconnect={() => setConfigured(false)} />} />
 
-          {/* ── ERP Module Routes ── */}
-          <Route path="business-entities" element={<BusinessEntities />} />
-          <Route path="inventory" element={<Inventory />} />
-          <Route path="inventory/products" element={<Products />} />
-          <Route path="production" element={<Production />} />
-          <Route path="vouchers/sales" element={<SalesVoucher />} />
-          <Route path="vouchers/purchase" element={<PurchaseVoucher />} />
-          <Route path="vouchers/receipt" element={<ReceiptVoucher />} />
-          <Route path="vouchers/payment" element={<PaymentVoucher />} />
-          <Route path="vouchers/expense" element={<ExpenseVoucher />} />
-          <Route path="salary" element={<Salary />} />
-          <Route path="journal" element={<Journal />} />
-          <Route path="banking" element={<Banking />} />
-          <Route path="reports" element={<Reports />} />
-          <Route path="masters" element={<Masters />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+            {/* ── ERP Module Routes ── */}
+            <Route path="business-entities" element={<BusinessEntities />} />
+            <Route path="inventory" element={<Inventory />} />
+            <Route path="inventory/products" element={<Products />} />
+            <Route path="production" element={<Production />} />
+            <Route path="vouchers/sales" element={<SalesVoucher />} />
+            <Route path="vouchers/purchase" element={<PurchaseVoucher />} />
+            <Route path="vouchers/receipt" element={<ReceiptVoucher />} />
+            <Route path="vouchers/payment" element={<PaymentVoucher />} />
+            <Route path="vouchers/expense" element={<ExpenseVoucher />} />
+            <Route path="salary" element={<Salary />} />
+            <Route path="journal" element={<Journal />} />
+            <Route path="banking" element={<Banking />} />
+            <Route path="reports" element={<Reports />} />
+            <Route path="masters" element={<Masters />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </SchemaIntegrityGate>
   );
 }
 

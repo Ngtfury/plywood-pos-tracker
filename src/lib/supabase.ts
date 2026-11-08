@@ -115,7 +115,7 @@ export async function testConnection(
       // PostgREST error 42P01: relation "categories" does not exist
       return {
         success: true,
-        message: `Connected, but the MVP ERP schema is incomplete. Missing: ${missingTables.join(', ')}. Apply supabase/migrations/004_plywood_erp_mvp.sql.`,
+        message: `Connected, but schema is incomplete. Missing tables: ${missingTables.join(', ')}. Run supabase.sql in your Supabase SQL Editor.`,
         tablesExist: false
       };
     }

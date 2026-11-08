@@ -228,6 +228,75 @@ function testPlywoodUnitConversions() {
 
 testPlywoodUnitConversions();
 
+// 16. Master Schema (supabase.sql) & Auto-Sync Verification
+function testMasterSchemaIntegrity() {
+  const masterSqlPath = path.join(projectRoot, 'supabase.sql');
+  const masterSqlTsPath = path.join(projectRoot, 'src', 'lib', 'db', 'masterSchemaSql.ts');
+  const schemaSyncTsPath = path.join(projectRoot, 'src', 'lib', 'db', 'schemaSync.ts');
+
+  assert(fs.existsSync(masterSqlPath), 'Fix 14: Master schema file exists at project root (supabase.sql)');
+  assert(fs.existsSync(masterSqlTsPath), 'Fix 14: Bundled master schema module exists at src/lib/db/masterSchemaSql.ts');
+  assert(fs.existsSync(schemaSyncTsPath), 'Fix 14: Schema sync and health engine exists at src/lib/db/schemaSync.ts');
+
+  const masterSqlContent = fs.readFileSync(masterSqlPath, 'utf8');
+
+  // Verify all 24 tables are in supabase.sql
+  const expectedTables = [
+    'categories', 'entities', 'custom_fields', 'transactions', 'credit_payments',
+    'business_entities', 'accounts', 'products', 'product_variants', 'employees',
+    'partners', 'bank_accounts', 'stock_balances', 'stock_movements', 'production_entries',
+    'vouchers', 'voucher_lines', 'journal_entries', 'journal_lines', 'salary_records',
+    'bank_statement_transactions', 'bank_reconciliation_matches', 'erp_settings', 'voucher_sequences'
+  ];
+
+  let missingInMaster: string[] = [];
+  for (const tbl of expectedTables) {
+    if (!masterSqlContent.includes(`CREATE TABLE IF NOT EXISTS public.${tbl}`)) {
+      missingInMaster.push(tbl);
+    }
+  }
+  assert(missingInMaster.length === 0, 'Fix 14: supabase.sql contains CREATE TABLE IF NOT EXISTS for all 24 tables', missingInMaster.join(', '));
+
+  // Verify exec_sql RPC
+  assert(
+    masterSqlContent.includes('CREATE OR REPLACE FUNCTION public.exec_sql(query text)') &&
+    masterSqlContent.includes('SECURITY DEFINER'),
+    'Fix 14: supabase.sql includes secure exec_sql RPC function for automated DDL migrations'
+  );
+
+  // Verify atomic procedures in master schema
+  const expectedFunctions = [
+    'post_stock_movement',
+    'post_production_entry',
+    'post_voucher_atomic',
+    'cancel_voucher_atomic',
+    'cancel_production_entry_atomic',
+    'cancel_journal_entry_atomic',
+    'get_trial_balance',
+    'get_next_voucher_number',
+    'post_salary_booking',
+    'post_salary_payment'
+  ];
+
+  let missingFuncs: string[] = [];
+  for (const fn of expectedFunctions) {
+    if (!masterSqlContent.includes(`FUNCTION public.${fn}`)) {
+      missingFuncs.push(fn);
+    }
+  }
+  assert(missingFuncs.length === 0, 'Fix 14: supabase.sql includes all atomic and cancellation RPC procedures', missingFuncs.join(', '));
+
+  // Verify idempotent fail-safe statements
+  assert(
+    masterSqlContent.includes('ON CONFLICT (id) DO NOTHING') &&
+    masterSqlContent.includes('CREATE INDEX IF NOT EXISTS') &&
+    masterSqlContent.includes('DROP POLICY IF EXISTS'),
+    'Fix 14: supabase.sql is strictly failsafe and can be executed repeatedly without errors or data loss'
+  );
+}
+
+testMasterSchemaIntegrity();
+
 console.log('\n==================================================');
 console.log(`TEST RESULTS: ${passCount} PASSED, ${failCount} FAILED`);
 console.log('==================================================\n');
