@@ -17,6 +17,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getCategories, getEntities, addTransaction, getCustomFields, Category, Entity, CustomFieldDef } from "@/lib/db/queries";
+import { getBankAccounts } from "@/lib/db/accounting";
+import type { BankAccount } from "@/lib/db/erp";
 import { useStore } from "@/store";
 import { CreditCard, Calendar, AlertCircle } from "lucide-react";
 import { IosSpinner } from "@/components/ui/IosSpinner";
@@ -40,9 +42,15 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
   const [totalBillAmount, setTotalBillAmount] = useState("");
   const [paidNowAmount, setPaidNowAmount] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [cashAmount, setCashAmount] = useState("");
+  const [bankAmount, setBankAmount] = useState("");
+  const [bankAccountId, setBankAccountId] = useState("");
+  const [paymentReference, setPaymentReference] = useState("");
+  const [paymentMode, setPaymentMode] = useState<"cash_only" | "bank_transfer_only" | "cash_and_bank">("cash_only");
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [entities, setEntities] = useState<Entity[]>([]);
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [customFields, setCustomFields] = useState<CustomFieldDef[]>([]);
   const [loading, setLoading] = useState(false);
   
@@ -53,6 +61,9 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
     getCategories(type).then(setCategories).catch(console.error);
     getEntities().then(setEntities).catch(console.error);
     getCustomFields().then(setCustomFields).catch(console.error);
+    if (type === "IN") {
+      getBankAccounts().then(setBankAccounts).catch(console.error);
+    }
   }, [type, refreshTrigger]);
 
   // Reset form when modal opens
@@ -68,18 +79,49 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
       setTotalBillAmount("");
       setPaidNowAmount("");
       setDueDate("");
+      setCashAmount("");
+      setBankAmount("");
+      setBankAccountId("");
+      setPaymentReference("");
+      setPaymentMode("cash_only");
     }
   }, [isOpen, type, refreshTrigger]);
+
+  useEffect(() => {
+    if (type !== "IN" || isCredit) return;
+    if (paymentMode === "cash_only") {
+      setCashAmount(amount);
+      setBankAmount("0");
+      setBankAccountId("");
+      setPaymentReference("");
+    } else if (paymentMode === "bank_transfer_only") {
+      setCashAmount("0");
+      setBankAmount(amount);
+    }
+  }, [amount, isCredit, paymentMode, type]);
 
   const calcTotal = isCredit ? (parseFloat(totalBillAmount) || 0) : (parseFloat(amount) || 0);
   const calcPaid = isCredit ? (parseFloat(paidNowAmount) || 0) : calcTotal;
   const calcBalanceDue = Math.max(0, calcTotal - calcPaid);
+  const receivedCash = parseFloat(cashAmount) || 0;
+  const receivedBank = parseFloat(bankAmount) || 0;
+  const receivedBreakdownTotal = receivedCash + receivedBank;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!categoryId) return;
     if (!isCredit && !amount) return;
     if (isCredit && (!totalBillAmount || entityId === "none")) return;
+    if (type === "IN" && !isCredit) {
+      if (Math.abs(receivedBreakdownTotal - (parseFloat(amount) || 0)) > 0.005) {
+        alert("Cash Amount and Bank Transfer Amount must equal Total Amount Received.");
+        return;
+      }
+      if (receivedBank > 0 && !bankAccountId) {
+        alert("Select the receiving bank account for the bank transfer.");
+        return;
+      }
+    }
     
     setLoading(true);
     try {
@@ -123,7 +165,14 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
           quantity: null,
           description: null,
           notes,
-          custom_data: customData
+          custom_data: type === "IN" ? {
+            ...customData,
+            payment_method: paymentMode,
+            cash_amount: receivedCash,
+            bank_amount: receivedBank,
+            bank_account_id: receivedBank > 0 ? bankAccountId : null,
+            payment_reference: paymentReference || null,
+          } : customData
         });
       }
       triggerRefresh();
@@ -192,36 +241,114 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
 
           {/* Amount Fields */}
           {!isCredit ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="amount">Amount (₹) *</Label>
-                <Input 
-                  id="amount" 
-                  type="number" 
-                  placeholder="0.00" 
-                  value={amount}
-                  onChange={(e) => setAmount(e.currentTarget.value)}
-                  required
-                  min="0.01"
-                  step="0.01"
-                  autoFocus
-                />
-              </div>
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="amount">Amount (₹) *</Label>
+                  <Input
+                    id="amount"
+                    type="number"
+                    placeholder="0.00"
+                    value={amount}
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      setAmount(value);
+                      if (receivedBank <= 0) setCashAmount(value);
+                    }}
+                    required
+                    min="0.01"
+                    step="0.01"
+                    autoFocus
+                  />
+                </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="category">Category *</Label>
-                <Select value={categoryId} onValueChange={setCategoryId} required>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select category" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {categories.map(c => (
-                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="space-y-2">
+                  <Label htmlFor="category">Category *</Label>
+                  <Select value={categoryId} onValueChange={setCategoryId} required>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {categories.map(c => (
+                        <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-            </div>
+              {type === "IN" && (
+                <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3.5 space-y-3">
+                  <div className="space-y-2">
+                    <Label>Payment Mode</Label>
+                    <Select value={paymentMode} onValueChange={(value) => setPaymentMode(value as typeof paymentMode)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="cash_only">Cash Only</SelectItem>
+                        <SelectItem value="bank_transfer_only">Bank Transfer Only</SelectItem>
+                        <SelectItem value="cash_and_bank">Cash + Bank Transfer</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {paymentMode !== "bank_transfer_only" && (
+                    <div className="space-y-2">
+                      <Label htmlFor="cashAmount">Cash Amount (₹)</Label>
+                      <Input
+                        id="cashAmount"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={cashAmount}
+                        readOnly={paymentMode === "cash_only"}
+                        onChange={(e) => setCashAmount(e.currentTarget.value)}
+                      />
+                    </div>
+                  )}
+                  {paymentMode !== "cash_only" && (
+                    <div className="space-y-2">
+                      <Label htmlFor="bankAmount">Bank Transfer Amount (₹)</Label>
+                      <Input
+                        id="bankAmount"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={bankAmount}
+                        readOnly={paymentMode === "bank_transfer_only"}
+                        onChange={(e) => setBankAmount(e.currentTarget.value)}
+                      />
+                    </div>
+                  )}
+                {receivedBank > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Receiving Bank Account *</Label>
+                      <Select value={bankAccountId} onValueChange={setBankAccountId}>
+                        <SelectTrigger><SelectValue placeholder="Select receiving bank" /></SelectTrigger>
+                        <SelectContent>
+                          {bankAccounts.filter((bank) => bank.is_active).map((bank) => (
+                            <SelectItem key={bank.id} value={bank.id}>
+                              {bank.bank_name} ({bank.account_no})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="paymentReference">Bank Reference / UTR (Optional)</Label>
+                      <Input
+                        id="paymentReference"
+                        value={paymentReference}
+                        onChange={(e) => setPaymentReference(e.currentTarget.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+                  <div className={`text-sm font-medium ${Math.abs(receivedBreakdownTotal - (parseFloat(amount) || 0)) <= 0.005 ? "text-emerald-400" : "text-rose-400"}`}>
+                    Allocated: ₹{receivedBreakdownTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })} / Received: ₹{(parseFloat(amount) || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                  </div>
+                </div>
+              )}
+            </>
           ) : (
             <div className="p-3.5 rounded-lg border border-primary/30 bg-primary/5 space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
