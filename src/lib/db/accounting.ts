@@ -356,6 +356,7 @@ export async function bookSalary(params: {
   business_entity_id: string;
   voucher_date: string;
   salary_month: string;
+  salary_frequency: 'monthly' | 'weekly';
   payee_type: 'employee' | 'partner';
   employee_id?: string | null;
   partner_id?: string | null;
@@ -371,6 +372,7 @@ export async function bookSalary(params: {
       business_entity_id: params.business_entity_id,
       voucher_date: params.voucher_date,
       salary_month: params.salary_month,
+      salary_frequency: params.salary_frequency,
       payee_type: params.payee_type,
       employee_id: params.employee_id || null,
       partner_id: params.partner_id || null,

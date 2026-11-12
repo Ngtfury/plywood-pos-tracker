@@ -231,6 +231,7 @@ export interface SalaryRecord {
   business_entity_id: string;
   voucher_date: string;
   salary_month: string;
+  salary_frequency: 'monthly' | 'weekly';
   payee_type: 'employee' | 'partner';
   employee_id: string | null;
   partner_id: string | null;
