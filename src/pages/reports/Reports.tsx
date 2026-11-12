@@ -543,9 +543,10 @@ export function Reports() {
               onClick={() =>
                 handleExportCsv(
                   "Salary_Register",
-                  ["Month", "Payee Name", "Type", "Booked Amount", "Paid Amount", "Pending Balance", "Status"],
+                  ["Month", "Frequency", "Payee Name", "Type", "Booked Amount", "Paid Amount", "Pending Balance", "Status"],
                   salaryRecords.map((s) => [
                     s.salary_month,
+                    s.salary_frequency || "monthly",
                     s.payee_name,
                     s.payee_type,
                     s.booked_amount,
@@ -565,6 +566,7 @@ export function Reports() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Salary Month</TableHead>
+                  <TableHead>Frequency</TableHead>
                   <TableHead>Payee Name</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead className="text-right">Booked (₹)</TableHead>
@@ -577,6 +579,11 @@ export function Reports() {
                 {salaryRecords.map((s) => (
                   <TableRow key={s.id}>
                     <TableCell className="font-mono text-xs font-semibold">{s.salary_month}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="text-[10px] uppercase">
+                        {s.salary_frequency || "monthly"}
+                      </Badge>
+                    </TableCell>
                     <TableCell className="text-xs font-semibold">{s.payee_name}</TableCell>
                     <TableCell>
                       <Badge variant="outline" className="text-[10px] uppercase">

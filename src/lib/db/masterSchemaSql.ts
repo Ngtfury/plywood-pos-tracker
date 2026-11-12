@@ -287,6 +287,7 @@ CREATE TABLE IF NOT EXISTS public.salary_records (
     business_entity_id TEXT NOT NULL REFERENCES public.business_entities(id) ON DELETE CASCADE,
     voucher_date       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     salary_month       TEXT NOT NULL,
+    salary_frequency   TEXT NOT NULL DEFAULT 'monthly' CHECK (salary_frequency IN ('monthly', 'weekly')),
     payee_type         TEXT NOT NULL CHECK (payee_type IN ('employee', 'partner')),
     employee_id        TEXT REFERENCES public.employees(id) ON DELETE SET NULL,
     partner_id         TEXT REFERENCES public.partners(id) ON DELETE SET NULL,
@@ -1290,12 +1291,13 @@ BEGIN
     );
 
     INSERT INTO public.salary_records (
-        id, business_entity_id, voucher_date, salary_month,
+        id, business_entity_id, voucher_date, salary_month, salary_frequency,
         payee_type, employee_id, partner_id, payee_name,
         booked_amount, paid_amount, status,
         expense_account_id, payable_account_id, booking_journal_id, narration, created_at
     ) VALUES (
         v_id, biz, (p_record->>'voucher_date')::timestamptz, p_record->>'salary_month',
+        COALESCE(NULLIF(p_record->>'salary_frequency', ''), 'monthly'),
         p_record->>'payee_type', NULLIF(p_record->>'employee_id', ''), NULLIF(p_record->>'partner_id', ''),
         p_record->>'payee_name', amt, 0, 'booked',
         p_record->>'expense_account_id', p_record->>'payable_account_id', jid, p_record->>'narration', NOW()

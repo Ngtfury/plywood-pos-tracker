@@ -55,6 +55,7 @@ export function Salary() {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
+  const [salaryFrequency, setSalaryFrequency] = useState<"monthly" | "weekly">("monthly");
   const [payeeType, setPayeeType] = useState<"employee" | "partner">("employee");
   const [payeeId, setPayeeId] = useState("");
   const [bookedAmount, setBookedAmount] = useState("");
@@ -100,6 +101,7 @@ export function Salary() {
     }
     setVoucherDate(new Date().toISOString().split("T")[0]);
     setSalaryMonth(selectedMonth);
+    setSalaryFrequency("monthly");
     setPayeeType("employee");
     setPayeeId(employees[0]?.id || "");
     setBookedAmount(employees[0]?.monthly_salary ? employees[0].monthly_salary.toString() : "");
@@ -152,6 +154,7 @@ export function Salary() {
         business_entity_id: selectedEntityId,
         voucher_date: voucherDate + "T12:00:00Z",
         salary_month: salaryMonth,
+        salary_frequency: salaryFrequency,
         payee_type: payeeType,
         employee_id: payeeType === "employee" ? payeeId : null,
         partner_id: payeeType === "partner" ? payeeId : null,
@@ -357,6 +360,7 @@ export function Salary() {
               <TableRow>
                 <TableHead>Voucher Date</TableHead>
                 <TableHead>Month</TableHead>
+                <TableHead>Frequency</TableHead>
                 <TableHead>Payee Name</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead className="text-right">Booked (₹)</TableHead>
@@ -369,7 +373,7 @@ export function Salary() {
             <TableBody>
               {filteredRecords.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground text-sm">
+                  <TableCell colSpan={10} className="text-center py-8 text-muted-foreground text-sm">
                     No salary records logged for {selectedMonth}. Click "Book Salary / Accrual" to add payroll.
                   </TableCell>
                 </TableRow>
@@ -378,6 +382,11 @@ export function Salary() {
                   <TableRow key={r.id}>
                     <TableCell className="text-xs">{new Date(r.voucher_date).toLocaleDateString()}</TableCell>
                     <TableCell className="font-mono text-xs font-semibold">{r.salary_month}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="text-[10px]">
+                        {(r.salary_frequency || "monthly").toUpperCase()}
+                      </Badge>
+                    </TableCell>
                     <TableCell className="font-semibold text-xs">{r.payee_name}</TableCell>
                     <TableCell>
                       <Badge
@@ -467,6 +476,18 @@ export function Salary() {
               </div>
 
               <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Salary Frequency *</Label>
+                  <Select value={salaryFrequency} onValueChange={(value: "monthly" | "weekly") => setSalaryFrequency(value)}>
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="monthly">Monthly</SelectItem>
+                      <SelectItem value="weekly">Weekly</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="space-y-1">
                   <Label className="text-xs">Payee Type *</Label>
                   <Select value={payeeType} onValueChange={(v: any) => handlePayeeTypeChange(v)}>
