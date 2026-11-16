@@ -6,11 +6,13 @@
 export interface BusinessEntity {
   id: string;
   name: string;
-  entity_type: 'company' | 'branch';
+  entity_type: 'company' | 'branch' | 'warehouse';
   parent_id: string | null;
   address: string | null;
   phone: string | null;
   gstin: string | null;
+  location?: string | null;
+  description?: string | null;
   is_active: boolean;
   created_at?: string;
   // joined
@@ -32,6 +34,13 @@ export interface Product {
   name: string;
   category: 'plywood' | 'wood' | 'face_veneer' | 'other_veneer' | 'gum_resin' | 'other';
   unit: string;
+  sku?: string | null;
+  brand?: string | null;
+  grade?: string | null;
+  purchase_price?: number | null;
+  selling_price?: number | null;
+  wholesale_price?: number | null;
+  min_stock_level?: number | null;
   description: string | null;
   is_active: boolean;
   // joined
@@ -46,6 +55,11 @@ export interface ProductVariant {
   sqft_per_sheet: number | null;
   sku: string | null;
   unit: string | null;
+  purchase_price?: number | null;
+  selling_price?: number | null;
+  wholesale_price?: number | null;
+  grade?: string | null;
+  min_stock_level?: number | null;
   is_active: boolean;
   // joined
   product_name?: string;
@@ -60,6 +74,7 @@ export interface Employee {
   bank_account_no: string | null;
   ifsc: string | null;
   monthly_salary: number;
+  join_date?: string;
   is_active: boolean;
 }
 
@@ -68,7 +83,21 @@ export interface Partner {
   name: string;
   phone: string | null;
   address: string | null;
+  monthly_remun?: number;
+  profit_share_pct?: number;
   is_active: boolean;
+}
+
+export interface UnitOfMeasurement {
+  id: string;
+  name: string;
+  abbreviation: string;
+  conversion_factor: number;
+  base_unit?: string | null;
+  description?: string | null;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface BankAccount {
@@ -79,6 +108,7 @@ export interface BankAccount {
   ifsc: string | null;
   branch_name: string | null;
   opening_balance: number;
+  current_balance: number;
   is_active: boolean;
   // joined
   business_entity_name?: string;

@@ -275,7 +275,14 @@ function testMasterSchemaIntegrity() {
     'get_trial_balance',
     'get_next_voucher_number',
     'post_salary_booking',
-    'post_salary_payment'
+    'post_salary_payment',
+    'calculate_bank_account_balance',
+    'refresh_bank_account_balance',
+    'get_bank_accounts_with_balances',
+    'post_quick_transaction_atomic',
+    'update_quick_transaction_atomic',
+    'delete_transactions_atomic',
+    'delete_bank_account'
   ];
 
   let missingFuncs: string[] = [];
@@ -285,6 +292,12 @@ function testMasterSchemaIntegrity() {
     }
   }
   assert(missingFuncs.length === 0, 'Fix 14: supabase.sql includes all atomic and cancellation RPC procedures', missingFuncs.join(', '));
+
+  assert(
+    masterSqlContent.includes('current_balance') &&
+    masterSqlContent.includes('idx_transactions_bank_account'),
+    'Bank balance management: bank accounts persist current balances and transactions are indexed by bank account'
+  );
 
   // Verify idempotent fail-safe statements
   assert(

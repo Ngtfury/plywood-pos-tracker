@@ -9,8 +9,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { clearDb } from "@/lib/db/index";
-import { getCustomFields, addCustomField, deleteCustomFields, CustomFieldDef } from "@/lib/db/queries";
+import { getCustomFields, addCustomField, deleteCustomFields, updateCustomField, CustomFieldDef } from "@/lib/db/queries";
 import { 
   getStoredCredentials, 
   markSupabaseConfigured,
@@ -33,7 +40,12 @@ import {
   Copy,
   ExternalLink,
   ShieldCheck,
-  Layers
+  Layers,
+  Building2,
+  Mail,
+  Phone,
+  MapPin,
+  Pencil
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { IosSpinner } from "@/components/ui/IosSpinner";
@@ -41,16 +53,44 @@ import { LicenseSettingsSection } from "@/licensing";
 import { useUserAuth } from "@/auth/UserAuthContext";
 import { checkSchemaHealth, applyMasterSchema, SchemaHealthResult } from "@/lib/db/schemaSync";
 import { MASTER_SCHEMA_SQL } from "@/lib/db/masterSchemaSql";
+import { getBusinessEntities, upsertBusinessEntity, getErpSettings, saveErpSetting } from "@/lib/db/inventory";
+import { recordAuditLog } from "@/lib/db/audit";
 
 interface SettingsProps {
   onDisconnect?: () => void;
 }
 
 export function Settings({ onDisconnect }: SettingsProps) {
+  const triggerRefresh = useStore(s => s.triggerRefresh);
+  const refreshTrigger = useStore(s => s.refreshTrigger);
+
+  // Business Profile & Essential Settings state (Section 2.H)
+  const [companyEntityId, setCompanyEntityId] = useState<string | null>(null);
+  const [companyName, setCompanyName] = useState("");
+  const [companyAddress, setCompanyAddress] = useState("");
+  const [companyPhone, setCompanyPhone] = useState("");
+  const [companyEmail, setCompanyEmail] = useState("");
+  const [companyGstin, setCompanyGstin] = useState("");
+  const [defaultCreditPeriod, setDefaultCreditPeriod] = useState("30");
+  const [defaultTerms, setDefaultTerms] = useState("Payment due within 30 days of invoice date.");
+  const [currency, setCurrency] = useState("INR");
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileFeedback, setProfileFeedback] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Custom Fields state & Edit Modal
   const [fields, setFields] = useState<CustomFieldDef[]>([]);
   const [newFieldName, setNewFieldName] = useState("");
   const [newFieldType, setNewFieldType] = useState<"text" | "number">("text");
   const [newFieldApplyTo, setNewFieldApplyTo] = useState<"IN" | "OUT" | "BOTH">("BOTH");
+
+  const [editFieldModalOpen, setEditFieldModalOpen] = useState(false);
+  const [editingField, setEditingField] = useState<CustomFieldDef | null>(null);
+  const [editFieldName, setEditFieldName] = useState("");
+  const [editFieldType, setEditFieldType] = useState<"text" | "number">("text");
+  const [editFieldApplyTo, setEditFieldApplyTo] = useState<"IN" | "OUT" | "BOTH">("BOTH");
+  const [savingField, setSavingField] = useState(false);
+  const [fieldError, setFieldError] = useState<string | null>(null);
 
   // User Auth & Master Password state
   const { lock, changePassword } = useUserAuth();
@@ -80,12 +120,101 @@ export function Settings({ onDisconnect }: SettingsProps) {
   const projectRef = supabaseUrl ? supabaseUrl.replace(/^https?:\/\//, '').split('.')[0] : '';
   const sqlEditorUrl = projectRef && projectRef !== 'placeholder' ? `https://supabase.com/dashboard/project/${projectRef}/sql/new` : 'https://supabase.com/dashboard';
 
-  const triggerRefresh = useStore(s => s.triggerRefresh);
-  const refreshTrigger = useStore(s => s.refreshTrigger);
-
+  // Load Custom Fields and Business Profile
   useEffect(() => {
     getCustomFields().then(setFields).catch(console.error);
   }, [refreshTrigger]);
+
+  useEffect(() => {
+    setLoadingProfile(true);
+    Promise.all([
+      getErpSettings(),
+      getBusinessEntities()
+    ]).then(([settings, entities]) => {
+      const primaryCompany = entities.find(e => e.entity_type === 'company') || entities[0];
+      if (primaryCompany) {
+        setCompanyEntityId(primaryCompany.id);
+        setCompanyName(primaryCompany.name || settings.company_name || "");
+        setCompanyAddress(primaryCompany.address || settings.company_address || "");
+        setCompanyPhone(primaryCompany.phone || settings.company_phone || "");
+        setCompanyGstin(primaryCompany.gstin || settings.company_gstin || "");
+        setCurrency(settings.currency || "INR");
+      } else {
+        setCompanyName(settings.company_name || "");
+        setCompanyAddress(settings.company_address || "");
+        setCompanyPhone(settings.company_phone || "");
+        setCompanyGstin(settings.company_gstin || "");
+        setCurrency(settings.currency || "INR");
+      }
+      setCompanyEmail(settings.company_email || "");
+      if (settings.default_credit_period) setDefaultCreditPeriod(settings.default_credit_period);
+      if (settings.default_terms) setDefaultTerms(settings.default_terms);
+    }).catch(console.error).finally(() => setLoadingProfile(false));
+  }, [refreshTrigger]);
+
+  const handleSaveBusinessProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!companyName.trim()) {
+      setProfileFeedback({ success: false, message: "Business / Enterprise name is required." });
+      return;
+    }
+    setSavingProfile(true);
+    setProfileFeedback(null);
+    try {
+      const oldSettings = await getErpSettings();
+      // 1. Save all keys in erp_settings
+      await Promise.all([
+        saveErpSetting("company_name", companyName.trim()),
+        saveErpSetting("company_address", companyAddress.trim()),
+        saveErpSetting("company_phone", companyPhone.trim()),
+        saveErpSetting("company_email", companyEmail.trim()),
+        saveErpSetting("company_gstin", companyGstin.trim()),
+        saveErpSetting("default_credit_period", defaultCreditPeriod.trim()),
+        saveErpSetting("default_terms", defaultTerms.trim()),
+        saveErpSetting("currency", currency.trim() || "INR"),
+      ]);
+
+      // 2. Synchronize with business_entities table
+      const companyPayload: any = {
+        name: companyName.trim(),
+        entity_type: 'company' as const,
+        gstin: companyGstin.trim() || undefined,
+        address: companyAddress.trim() || undefined,
+        phone: companyPhone.trim() || undefined,
+        is_active: true,
+      };
+      if (companyEntityId) {
+        companyPayload.id = companyEntityId;
+      }
+      const savedEntityId = await upsertBusinessEntity(companyPayload);
+      setCompanyEntityId(savedEntityId);
+
+      // 3. Record audit log for business profile update
+      await recordAuditLog({
+        entity_type: 'business_profile',
+        record_id: savedEntityId || 'settings',
+        old_values: oldSettings,
+        new_values: {
+          company_name: companyName.trim(),
+          company_address: companyAddress.trim(),
+          company_phone: companyPhone.trim(),
+          company_email: companyEmail.trim(),
+          company_gstin: companyGstin.trim(),
+          default_credit_period: defaultCreditPeriod.trim(),
+          default_terms: defaultTerms.trim(),
+          currency: currency.trim(),
+        },
+        action: 'UPDATE',
+      });
+
+      setProfileFeedback({ success: true, message: "Business profile and essential settings saved successfully!" });
+      triggerRefresh();
+    } catch (err: any) {
+      setProfileFeedback({ success: false, message: err.message || "Failed to save business profile." });
+    } finally {
+      setSavingProfile(false);
+    }
+  };
 
   const handleTestConnection = async () => {
     setTestingConn(true);
@@ -223,6 +352,44 @@ export function Settings({ onDisconnect }: SettingsProps) {
     triggerRefresh();
   };
 
+  const handleOpenEditField = (field: CustomFieldDef) => {
+    setEditingField(field);
+    setEditFieldName(field.name);
+    setEditFieldType(field.type);
+    setEditFieldApplyTo(field.apply_to);
+    setFieldError(null);
+    setEditFieldModalOpen(true);
+  };
+
+  const handleSaveEditField = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingField) return;
+    if (!editFieldName.trim()) {
+      setFieldError("Field name is required.");
+      return;
+    }
+    setSavingField(true);
+    setFieldError(null);
+    try {
+      await updateCustomField(
+        editingField.id,
+        {
+          name: editFieldName.trim(),
+          type: editFieldType,
+          apply_to: editFieldApplyTo,
+        },
+        editingField
+      );
+      setEditFieldModalOpen(false);
+      setEditingField(null);
+      triggerRefresh();
+    } catch (err: any) {
+      setFieldError(err.message || "Failed to update custom field.");
+    } finally {
+      setSavingField(false);
+    }
+  };
+
   const handleDeleteField = async (id: string) => {
     if (!window.confirm("Delete this custom field? Existing data stored in transactions will be orphaned.")) return;
     await deleteCustomFields([id]);
@@ -232,14 +399,178 @@ export function Settings({ onDisconnect }: SettingsProps) {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-3xl font-bold tracking-tight">Settings</h2>
-        <p className="text-muted-foreground mt-1">Configure your production Supabase database connection, custom fields, and database operations.</p>
+        <h2 className="text-3xl font-bold tracking-tight">Settings &amp; Configuration</h2>
+        <p className="text-muted-foreground mt-1">
+          Manage your business profile, general credit policies, Supabase database connection, schema health, and custom fields.
+        </p>
       </div>
+
+      {/* 0. BUSINESS PROFILE & ESSENTIAL SETTINGS (SECTION 2.H) */}
+      <Card className="border-emerald-950/40 bg-zinc-950/30">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Building2 className="h-5 w-5 text-emerald-400" />
+            <CardTitle>Business Profile &amp; General Configuration</CardTitle>
+          </div>
+          <CardDescription>
+            Master business identity used across POS receipts, GST tax invoices, credit statements, and ledger vouchers.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loadingProfile ? (
+            <div className="py-8 flex justify-center items-center">
+              <IosSpinner size="md" className="text-emerald-400" />
+            </div>
+          ) : (
+            <form onSubmit={handleSaveBusinessProfile} className="space-y-4">
+              {profileFeedback && (
+                <div
+                  className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                    profileFeedback.success
+                      ? "bg-emerald-950/40 border border-emerald-800 text-emerald-300"
+                      : "bg-amber-950/40 border border-amber-800 text-amber-300"
+                  }`}
+                >
+                  {profileFeedback.success ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+                  )}
+                  <span>{profileFeedback.message}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label className="text-xs font-semibold">Business / Enterprise Legal Name *</Label>
+                  <div className="relative">
+                    <Building2 className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />
+                    <Input
+                      value={companyName}
+                      onChange={(e) => setCompanyName(e.target.value)}
+                      placeholder="e.g. Balaji Plywood &amp; Hardware Traders"
+                      required
+                      className="pl-9 h-9 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold">GSTIN / Tax Registration No.</Label>
+                  <Input
+                    value={companyGstin}
+                    onChange={(e) => setCompanyGstin(e.target.value.toUpperCase())}
+                    placeholder="e.g. 24AAAAA0000A1Z5"
+                    className="h-9 text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label className="text-xs font-semibold">Registered Business Address</Label>
+                  <div className="relative">
+                    <MapPin className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />
+                    <Input
+                      value={companyAddress}
+                      onChange={(e) => setCompanyAddress(e.target.value)}
+                      placeholder="e.g. Plot No. 12, Timber Market, Ring Road, Ahmedabad"
+                      className="pl-9 h-9 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold">Operating Currency</Label>
+                  <Input
+                    value={currency}
+                    onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+                    placeholder="INR"
+                    className="h-9 text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold">Contact Phone Number</Label>
+                  <div className="relative">
+                    <Phone className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />
+                    <Input
+                      value={companyPhone}
+                      onChange={(e) => setCompanyPhone(e.target.value)}
+                      placeholder="e.g. +91 98765 43210"
+                      className="pl-9 h-9 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold">Official Email Address</Label>
+                  <div className="relative">
+                    <Mail className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />
+                    <Input
+                      type="email"
+                      value={companyEmail}
+                      onChange={(e) => setCompanyEmail(e.target.value)}
+                      placeholder="e.g. billing@plywoodtraders.com"
+                      className="pl-9 h-9 text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold">Default Customer Credit Period (Days)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={defaultCreditPeriod}
+                    onChange={(e) => setDefaultCreditPeriod(e.target.value)}
+                    placeholder="30"
+                    className="h-9 text-xs"
+                  />
+                </div>
+
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label className="text-xs font-semibold">Default Invoice Terms &amp; Conditions</Label>
+                  <Input
+                    value={defaultTerms}
+                    onChange={(e) => setDefaultTerms(e.target.value)}
+                    placeholder="Payment due within 30 days. Subject to Ahmedabad jurisdiction."
+                    className="h-9 text-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <Button
+                  type="submit"
+                  disabled={savingProfile || !companyName.trim()}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer text-xs h-9"
+                >
+                  {savingProfile ? (
+                    <span className="flex items-center gap-2">
+                      <IosSpinner size="sm" className="text-white" />
+                      Saving Profile...
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5">
+                      <Check className="h-4 w-4" /> Save Business Profile
+                    </span>
+                  )}
+                </Button>
+              </div>
+            </form>
+          )}
+        </CardContent>
+      </Card>
       
-      {/* 0. SOFTWARE LICENSE & DEVICE SEAT */}
+      {/* 1. SOFTWARE LICENSE & DEVICE SEAT */}
       <LicenseSettingsSection />
 
-      {/* 0.5. APPLICATION SECURITY & MASTER PASSWORD */}
+      {/* 2. APPLICATION SECURITY & MASTER PASSWORD */}
       <Card className="border-emerald-950/40 bg-zinc-950/30">
         <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
@@ -343,7 +674,7 @@ export function Settings({ onDisconnect }: SettingsProps) {
         </CardContent>
       </Card>
 
-      {/* 1. SUPABASE CONNECTION SETTINGS */}
+      {/* 3. SUPABASE CONNECTION SETTINGS */}
       <Card>
         <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
@@ -445,7 +776,7 @@ export function Settings({ onDisconnect }: SettingsProps) {
         </CardContent>
       </Card>
 
-      {/* 1.5. DATABASE SCHEMA INTEGRITY & MASTER SYNC */}
+      {/* 4. DATABASE SCHEMA INTEGRITY & MASTER SYNC */}
       <Card className="border-indigo-950/40 bg-zinc-950/30">
         <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
@@ -583,7 +914,7 @@ export function Settings({ onDisconnect }: SettingsProps) {
         </CardContent>
       </Card>
 
-      {/* 2. CUSTOM FIELDS */}
+      {/* 5. CUSTOM FIELDS */}
       <Card>
         <CardHeader>
           <CardTitle>Custom Transaction Fields</CardTitle>
@@ -637,9 +968,26 @@ export function Settings({ onDisconnect }: SettingsProps) {
                       {f.type} Field • Applies to {f.apply_to === 'BOTH' ? 'Both' : (f.apply_to === 'IN' ? 'Income' : 'Expense')}
                     </p>
                   </div>
-                  <Button variant="ghost" size="icon" onClick={() => handleDeleteField(f.id)}>
-                    <Trash2 className="h-4 w-4 text-destructive" />
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      onClick={() => handleOpenEditField(f)}
+                      title="Edit Custom Field"
+                      className="cursor-pointer hover:bg-zinc-800 text-zinc-400 hover:text-white"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      onClick={() => handleDeleteField(f.id)}
+                      title="Delete Custom Field"
+                      className="cursor-pointer hover:bg-rose-950/40 text-destructive"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
               ))
             )}
@@ -647,7 +995,101 @@ export function Settings({ onDisconnect }: SettingsProps) {
         </CardContent>
       </Card>
 
-      {/* 3. DATABASE MANAGEMENT (PRODUCTION) */}
+      {/* Edit Custom Field Modal */}
+      <Dialog open={editFieldModalOpen} onOpenChange={setEditFieldModalOpen}>
+        <DialogContent className="sm:max-w-[420px]">
+          <form onSubmit={handleSaveEditField}>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="h-4 w-4 text-emerald-400" />
+                Edit Custom Transaction Field
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4 text-xs">
+              {fieldError && (
+                <div className="p-2.5 rounded bg-rose-950/40 border border-rose-800/60 text-rose-300 text-xs">
+                  {fieldError}
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold">Field Name *</Label>
+                <Input
+                  value={editFieldName}
+                  onChange={(e) => setEditFieldName(e.target.value)}
+                  placeholder="e.g. Batch Number"
+                  required
+                  className="h-9 text-xs"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold">Data Type</Label>
+                <Select
+                  value={editFieldType}
+                  onValueChange={(v: "text" | "number") => setEditFieldType(v)}
+                >
+                  <SelectTrigger className="h-9 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="text">Text (String)</SelectItem>
+                    <SelectItem value="number">Number (Numeric)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold">Apply To Workflow</Label>
+                <Select
+                  value={editFieldApplyTo}
+                  onValueChange={(v: "IN" | "OUT" | "BOTH") => setEditFieldApplyTo(v)}
+                >
+                  <SelectTrigger className="h-9 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="BOTH">Both Income &amp; Expense</SelectItem>
+                    <SelectItem value="IN">Income Only (Sales)</SelectItem>
+                    <SelectItem value="OUT">Expense Only (Purchases)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setEditFieldModalOpen(false)}
+                disabled={savingField}
+                className="cursor-pointer text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                size="sm"
+                disabled={savingField || !editFieldName.trim()}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer text-xs"
+              >
+                {savingField ? (
+                  <span className="flex items-center gap-1.5">
+                    <IosSpinner size="sm" className="text-white" />
+                    Saving Changes...
+                  </span>
+                ) : (
+                  "Save Changes"
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* 6. DATABASE MANAGEMENT (PRODUCTION) */}
       <Card className="border-rose-950/40 bg-zinc-950/40">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-rose-400">

@@ -4,7 +4,7 @@ import { getBankAccounts } from "@/lib/db/accounting";
 import type { BankAccount } from "@/lib/db/erp";
 import { useStore } from "@/store";
 import { Button } from "@/components/ui/button";
-import { Trash2 } from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 import { 
   Table, 
   TableBody, 
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { IosSpinner, IosLoadingView, IosLoadingOverlay } from "@/components/ui/IosSpinner";
+import { QuickEntryModal } from "@/components/QuickEntryModal";
 
 export function Transactions() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -22,6 +23,7 @@ export function Transactions() {
   const [loading, setLoading] = useState(true);
   const [isDeleting, setIsDeleting] = useState(false);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   
   const refreshTrigger = useStore(s => s.refreshTrigger);
   const triggerRefresh = useStore(s => s.triggerRefresh);
@@ -127,12 +129,13 @@ export function Transactions() {
               <TableHead>Payment Breakdown</TableHead>
               <TableHead>Credit / Balance</TableHead>
               <TableHead>Notes</TableHead>
+              <TableHead>Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {transactions.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="h-24 text-center">
+                <TableCell colSpan={10} className="h-24 text-center">
                   No transactions found.
                 </TableCell>
               </TableRow>
@@ -213,6 +216,16 @@ export function Transactions() {
                   <TableCell className="text-muted-foreground">
                     {txn.notes || "—"}
                   </TableCell>
+                  <TableCell>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setEditingTransaction(txn)}
+                      aria-label={`Edit ${txn.type === "IN" ? "income" : "expense"} transaction`}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  </TableCell>
                 </TableRow>
               ))
             )}
@@ -220,6 +233,14 @@ export function Transactions() {
         </Table>
         )}
       </div>
+      {editingTransaction && (
+        <QuickEntryModal
+          type={editingTransaction.type}
+          isOpen
+          initialTransaction={editingTransaction}
+          onClose={() => setEditingTransaction(null)}
+        />
+      )}
     </div>
   );
 }

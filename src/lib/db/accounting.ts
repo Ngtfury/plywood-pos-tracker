@@ -3,6 +3,7 @@
 // src/lib/db/accounting.ts
 // ============================================================
 import { getSupabase } from '../supabase';
+import { recordAuditLog } from './audit';
 import type {
   Account, Voucher, VoucherLine, JournalEntry,
   SalaryRecord, Employee, Partner, BankAccount,
@@ -19,15 +20,29 @@ export async function getAccounts(type?: string): Promise<Account[]> {
   return (data || []) as Account[];
 }
 
-export async function upsertAccount(data: Partial<Account>): Promise<string> {
+export async function upsertAccount(data: Partial<Account>, oldData?: Partial<Account>): Promise<string> {
   const supabase = getSupabase();
   const id = data.id || `acc_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
   const row = {
-    id, name: data.name!, account_type: data.account_type!, sub_type: data.sub_type || null,
-    parent_id: data.parent_id || null, is_system: false, is_active: data.is_active !== false,
+    id,
+    name: data.name ? data.name.trim() : 'Unnamed Account',
+    account_type: data.account_type!,
+    sub_type: data.sub_type || null,
+    parent_id: data.parent_id || null,
+    is_system: data.is_system != null ? data.is_system : false,
+    is_active: data.is_active !== false,
   };
   const { error } = await supabase.from('accounts').upsert([row]);
   if (error) { console.error('Error upserting account:', error); throw error; }
+
+  await recordAuditLog({
+    entity_type: 'accounts',
+    record_id: id,
+    old_values: oldData,
+    new_values: row,
+    action: data.id ? 'UPDATE' : 'CREATE',
+  });
+
   return id;
 }
 
@@ -263,15 +278,32 @@ export async function getEmployees(): Promise<Employee[]> {
   return (data || []) as Employee[];
 }
 
-export async function upsertEmployee(data: Partial<Employee>): Promise<string> {
+export async function upsertEmployee(data: Partial<Employee>, oldData?: Partial<Employee>): Promise<string> {
   const supabase = getSupabase();
   const id = data.id || `emp_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const row = { id, name: data.name!, designation: data.designation || null,
-    phone: data.phone || null, bank_account_no: data.bank_account_no || null,
-    ifsc: data.ifsc || null, monthly_salary: data.monthly_salary || 0,
-    is_active: data.is_active !== false };
+  const row: Record<string, any> = {
+    id,
+    name: data.name ? data.name.trim() : 'Unnamed Employee',
+    designation: data.designation || null,
+    phone: data.phone || null,
+    bank_account_no: data.bank_account_no || null,
+    ifsc: data.ifsc || null,
+    monthly_salary: data.monthly_salary != null ? Number(data.monthly_salary) : 0,
+    is_active: data.is_active !== false,
+  };
+  if (data.join_date) row.join_date = data.join_date;
+
   const { error } = await supabase.from('employees').upsert([row]);
   if (error) throw error;
+
+  await recordAuditLog({
+    entity_type: 'employees',
+    record_id: id,
+    old_values: oldData,
+    new_values: row,
+    action: data.id ? 'UPDATE' : 'CREATE',
+  });
+
   return id;
 }
 
@@ -284,13 +316,29 @@ export async function getPartners(): Promise<Partner[]> {
   return (data || []) as Partner[];
 }
 
-export async function upsertPartner(data: Partial<Partner>): Promise<string> {
+export async function upsertPartner(data: Partial<Partner>, oldData?: Partial<Partner>): Promise<string> {
   const supabase = getSupabase();
   const id = data.id || `ptr_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const row = { id, name: data.name!, phone: data.phone || null, address: data.address || null,
-    is_active: data.is_active !== false };
+  const row = {
+    id,
+    name: data.name ? data.name.trim() : 'Unnamed Partner',
+    phone: data.phone || null,
+    address: data.address || null,
+    monthly_remun: data.monthly_remun != null ? Number(data.monthly_remun) : 0,
+    profit_share_pct: data.profit_share_pct != null ? Number(data.profit_share_pct) : 0,
+    is_active: data.is_active !== false,
+  };
   const { error } = await supabase.from('partners').upsert([row]);
   if (error) throw error;
+
+  await recordAuditLog({
+    entity_type: 'partners',
+    record_id: id,
+    old_values: oldData,
+    new_values: row,
+    action: data.id ? 'UPDATE' : 'CREATE',
+  });
+
   return id;
 }
 
@@ -298,28 +346,55 @@ export async function upsertPartner(data: Partial<Partner>): Promise<string> {
 
 export async function getBankAccounts(businessEntityId?: string): Promise<BankAccount[]> {
   const supabase = getSupabase();
-  let q = supabase
-    .from('bank_accounts')
-    .select('*, business_entities(name)')
-    .order('bank_name');
-  if (businessEntityId) q = q.eq('business_entity_id', businessEntityId);
-  const { data, error } = await q;
+  const { data, error } = await supabase.rpc('get_bank_accounts_with_balances', {
+    p_business_entity_id: businessEntityId || null,
+  });
   if (error) { console.warn('Error fetching bank_accounts:', error.message); return []; }
-  return ((data || []) as any[]).map(r => ({
-    ...r, business_entity_name: r.business_entities?.name ?? undefined,
-  }));
+  return (data || []) as BankAccount[];
 }
 
-export async function upsertBankAccount(data: Partial<BankAccount>): Promise<string> {
+export async function upsertBankAccount(data: Partial<BankAccount>, oldData?: Partial<BankAccount>): Promise<string> {
   const supabase = getSupabase();
   const id = data.id || `bnk_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const row = { id, business_entity_id: data.business_entity_id || null,
-    bank_name: data.bank_name!, account_no: data.account_no!,
-    ifsc: data.ifsc || null, branch_name: data.branch_name || null,
-    opening_balance: data.opening_balance || 0, is_active: data.is_active !== false };
+  const row = {
+    id,
+    business_entity_id: data.business_entity_id || null,
+    bank_name: data.bank_name ? data.bank_name.trim() : 'Unnamed Bank',
+    account_no: data.account_no ? data.account_no.trim() : '',
+    ifsc: data.ifsc || null,
+    branch_name: data.branch_name || null,
+    opening_balance: data.opening_balance != null ? Number(data.opening_balance) : 0,
+    ...(data.id ? {} : { current_balance: data.opening_balance != null ? Number(data.opening_balance) : 0 }),
+    is_active: data.is_active !== false,
+  };
   const { error } = await supabase.from('bank_accounts').upsert([row]);
   if (error) throw error;
+
+  const { error: balanceError } = await supabase.rpc('refresh_bank_account_balance', {
+    p_bank_account_id: id,
+  });
+  if (balanceError) throw balanceError;
+
+  await recordAuditLog({
+    entity_type: 'bank_accounts',
+    record_id: id,
+    old_values: oldData,
+    new_values: row,
+    action: data.id ? 'UPDATE' : 'CREATE',
+  });
+
   return id;
+}
+
+export async function deleteBankAccount(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.rpc('delete_bank_account', {
+    p_bank_account_id: id,
+  });
+  if (error) {
+    console.error('Error deleting bank account:', error);
+    throw error;
+  }
 }
 
 // ---- Salary Records ----

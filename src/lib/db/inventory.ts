@@ -3,9 +3,10 @@
 // src/lib/db/inventory.ts
 // ============================================================
 import { getSupabase } from '../supabase';
+import { recordAuditLog } from './audit';
 import type {
   BusinessEntity, Product, ProductVariant,
-  StockBalance, StockMovement,
+  StockBalance, StockMovement, UnitOfMeasurement,
 } from './erp';
 
 // ---- Business Entities ----
@@ -25,21 +26,32 @@ export async function getBusinessEntities(): Promise<BusinessEntity[]> {
   }));
 }
 
-export async function upsertBusinessEntity(data: Partial<BusinessEntity>): Promise<string> {
+export async function upsertBusinessEntity(data: Partial<BusinessEntity>, oldData?: Partial<BusinessEntity>): Promise<string> {
   const supabase = getSupabase();
   const id = data.id || `be_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
   const row = {
     id,
-    name: data.name || 'Unnamed',
+    name: data.name ? data.name.trim() : 'Unnamed',
     entity_type: data.entity_type || 'company',
     parent_id: data.parent_id || null,
     address: data.address || null,
     phone: data.phone || null,
     gstin: data.gstin || null,
+    location: data.location || null,
+    description: data.description || null,
     is_active: data.is_active !== false,
   };
   const { error } = await supabase.from('business_entities').upsert([row]);
   if (error) { console.error('Error upserting business_entity:', error); throw error; }
+
+  await recordAuditLog({
+    entity_type: 'business_entities',
+    record_id: id,
+    old_values: oldData,
+    new_values: row,
+    action: data.id ? 'UPDATE' : 'CREATE',
+  });
+
   return id;
 }
 
@@ -60,19 +72,35 @@ export async function getProducts(category?: string): Promise<Product[]> {
   return (data || []) as Product[];
 }
 
-export async function upsertProduct(data: Partial<Product>): Promise<string> {
+export async function upsertProduct(data: Partial<Product>, oldData?: Partial<Product>): Promise<string> {
   const supabase = getSupabase();
   const id = data.id || `prod_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const row = {
+  const row: Record<string, any> = {
     id,
-    name: data.name || 'Unnamed Product',
+    name: data.name ? data.name.trim() : 'Unnamed Product',
     category: data.category || 'other',
     unit: data.unit || 'sheets',
+    sku: data.sku || null,
+    brand: data.brand || null,
+    grade: data.grade || null,
+    purchase_price: data.purchase_price != null ? Number(data.purchase_price) : null,
+    selling_price: data.selling_price != null ? Number(data.selling_price) : null,
+    wholesale_price: data.wholesale_price != null ? Number(data.wholesale_price) : null,
+    min_stock_level: data.min_stock_level != null ? Number(data.min_stock_level) : null,
     description: data.description || null,
     is_active: data.is_active !== false,
   };
   const { error } = await supabase.from('products').upsert([row]);
   if (error) { console.error('Error upserting product:', error); throw error; }
+
+  await recordAuditLog({
+    entity_type: 'products',
+    record_id: id,
+    old_values: oldData,
+    new_values: row,
+    action: data.id ? 'UPDATE' : 'CREATE',
+  });
+
   return id;
 }
 
@@ -94,22 +122,92 @@ export async function getProductVariants(productId?: string): Promise<ProductVar
   }));
 }
 
-export async function upsertProductVariant(data: Partial<ProductVariant>): Promise<string> {
+export async function upsertProductVariant(data: Partial<ProductVariant>, oldData?: Partial<ProductVariant>): Promise<string> {
   const supabase = getSupabase();
   const id = data.id || `pv_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const row = {
+  const row: Record<string, any> = {
     id,
     product_id: data.product_id,
     size: data.size || null,
-    thickness: data.thickness || null,
-    sqft_per_sheet: data.sqft_per_sheet || null,
+    thickness: data.thickness != null ? Number(data.thickness) : null,
+    sqft_per_sheet: data.sqft_per_sheet != null ? Number(data.sqft_per_sheet) : null,
     sku: data.sku || null,
     unit: data.unit || null,
+    purchase_price: data.purchase_price != null ? Number(data.purchase_price) : null,
+    selling_price: data.selling_price != null ? Number(data.selling_price) : null,
+    wholesale_price: data.wholesale_price != null ? Number(data.wholesale_price) : null,
+    grade: data.grade || null,
+    min_stock_level: data.min_stock_level != null ? Number(data.min_stock_level) : null,
     is_active: data.is_active !== false,
   };
   const { error } = await supabase.from('product_variants').upsert([row]);
   if (error) { console.error('Error upserting product_variant:', error); throw error; }
+
+  await recordAuditLog({
+    entity_type: 'product_variants',
+    record_id: id,
+    old_values: oldData,
+    new_values: row,
+    action: data.id ? 'UPDATE' : 'CREATE',
+  });
+
   return id;
+}
+
+// ---- Units of Measurement ----
+
+export async function getUnitsOfMeasurement(): Promise<UnitOfMeasurement[]> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('units_of_measurement')
+    .select('*')
+    .order('name', { ascending: true });
+  if (error) {
+    console.warn('Error fetching units_of_measurement:', error.message);
+    // Fallback to default units if table not yet created
+    return [
+      { id: 'uom_sheets', name: 'Sheets', abbreviation: 'sheets', conversion_factor: 1, base_unit: 'sheets', description: 'Standard plywood sheets', is_active: true },
+      { id: 'uom_pieces', name: 'Pieces', abbreviation: 'pcs', conversion_factor: 1, base_unit: 'pieces', description: 'Single unit pieces', is_active: true },
+      { id: 'uom_sqft', name: 'Square Feet', abbreviation: 'sqft', conversion_factor: 1, base_unit: 'sqft', description: 'Square feet surface area', is_active: true },
+      { id: 'uom_sqm', name: 'Square Meters', abbreviation: 'sqm', conversion_factor: 0.0929, base_unit: 'sqft', description: 'Metric square meters', is_active: true },
+      { id: 'uom_kg', name: 'Kilograms', abbreviation: 'kg', conversion_factor: 1, base_unit: 'kg', description: 'Weight in kg', is_active: true },
+      { id: 'uom_litre', name: 'Litres', abbreviation: 'ltr', conversion_factor: 1, base_unit: 'litre', description: 'Volume in litres', is_active: true },
+    ];
+  }
+  return (data || []) as UnitOfMeasurement[];
+}
+
+export async function upsertUnitOfMeasurement(data: Partial<UnitOfMeasurement>, oldData?: Partial<UnitOfMeasurement>): Promise<string> {
+  const supabase = getSupabase();
+  const id = data.id || `uom_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const row = {
+    id,
+    name: data.name ? data.name.trim() : 'Unnamed Unit',
+    abbreviation: data.abbreviation ? data.abbreviation.trim() : 'unit',
+    conversion_factor: data.conversion_factor != null ? Number(data.conversion_factor) : 1.0,
+    base_unit: data.base_unit || 'pieces',
+    description: data.description || null,
+    is_active: data.is_active !== false,
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await supabase.from('units_of_measurement').upsert([row]);
+  if (error) { console.error('Error upserting unit_of_measurement:', error); throw error; }
+
+  await recordAuditLog({
+    entity_type: 'units_of_measurement',
+    record_id: id,
+    old_values: oldData,
+    new_values: row,
+    action: data.id ? 'UPDATE' : 'CREATE',
+  });
+
+  return id;
+}
+
+export async function deleteUnitOfMeasurement(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.from('units_of_measurement').delete().eq('id', id);
+  if (error) throw error;
 }
 
 // ---- Stock Balances ----
