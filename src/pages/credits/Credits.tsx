@@ -9,6 +9,7 @@ import {
   deleteEntityCredits,
   getCategories,
   getEntities,
+  updateEntity,
   EntityCreditLedger,
   Category,
   Entity
@@ -54,7 +55,8 @@ import {
   CheckCircle2, 
   Clock, 
   FileText,
-  Trash2
+  Trash2,
+  Pencil
 } from "lucide-react";
 import { IosSpinner, IosLoadingView, IosLoadingOverlay } from "@/components/ui/IosSpinner";
 
@@ -106,6 +108,15 @@ export function Credits() {
   const [addCreditDate, setAddCreditDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [addCreditNotes, setAddCreditNotes] = useState<string>("");
   const [addCreditLoading, setAddCreditLoading] = useState(false);
+
+  // Customer Credit Settings Edit Modal state
+  const [editCreditModalOpen, setEditCreditModalOpen] = useState(false);
+  const [editingCreditEntity, setEditingCreditEntity] = useState<Entity | null>(null);
+  const [editCreditLimit, setEditCreditLimit] = useState("");
+  const [editCreditPeriod, setEditCreditPeriod] = useState("");
+  const [editCreditTerms, setEditCreditTerms] = useState("");
+  const [editCreditNotes, setEditCreditNotes] = useState("");
+  const [editCreditSaving, setEditCreditSaving] = useState(false);
 
   const refreshTrigger = useStore(s => s.refreshTrigger);
   const triggerRefresh = useStore(s => s.triggerRefresh);
@@ -243,6 +254,53 @@ export function Credits() {
       alert("Error recording payment: " + (err?.message || err));
     } finally {
       setPaymentLoading(false);
+    }
+  };
+
+  const openEditCreditSettings = (entity: Entity) => {
+    setEditingCreditEntity(entity);
+    setEditCreditLimit(entity.credit_limit != null ? String(entity.credit_limit) : "");
+    setEditCreditPeriod(entity.credit_period != null ? String(entity.credit_period) : "");
+    setEditCreditTerms(entity.credit_terms || "");
+    setEditCreditNotes(entity.notes || "");
+    setEditCreditModalOpen(true);
+  };
+
+  const handleSaveCreditSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingCreditEntity) return;
+
+    const limitVal = editCreditLimit.trim() ? parseFloat(editCreditLimit) : null;
+    const periodVal = editCreditPeriod.trim() ? parseInt(editCreditPeriod, 10) : null;
+
+    if (limitVal !== null && (isNaN(limitVal) || limitVal < 0)) {
+      alert("Credit Limit must be a positive number or left blank.");
+      return;
+    }
+    if (periodVal !== null && (isNaN(periodVal) || periodVal < 0)) {
+      alert("Credit Period must be a positive number of days or left blank.");
+      return;
+    }
+
+    setEditCreditSaving(true);
+    try {
+      await updateEntity(
+        editingCreditEntity.id,
+        {
+          credit_limit: limitVal,
+          credit_period: periodVal,
+          credit_terms: editCreditTerms.trim() || null,
+          notes: editCreditNotes.trim() || null,
+        },
+        editingCreditEntity
+      );
+      triggerRefresh();
+      setEditCreditModalOpen(false);
+    } catch (err: any) {
+      console.error("Failed to update credit settings:", err);
+      alert("Error updating credit settings: " + (err?.message || err));
+    } finally {
+      setEditCreditSaving(false);
     }
   };
 
@@ -627,6 +685,16 @@ export function Credits() {
 
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1.5">
+                        <Button 
+                          variant="ghost" 
+                          size="icon"
+                          onClick={() => openEditCreditSettings(ledger.entity)}
+                          className="h-8 w-8 text-muted-foreground hover:text-foreground cursor-pointer"
+                          title="Edit credit policy & limits"
+                        >
+                          <Pencil className="h-3.5 w-3.5 text-blue-400" />
+                        </Button>
+
                         <Button 
                           variant="ghost" 
                           size="sm" 
@@ -1091,16 +1159,27 @@ export function Credits() {
                       {selectedLedger.entity.type} • Contact: {selectedLedger.entity.phone || "No phone"}
                     </DialogDescription>
                   </div>
-                  <Button 
-                    size="sm" 
-                    onClick={() => {
-                      setPassbookOpen(false);
-                      openPaymentModal(selectedLedger);
-                    }}
-                    className={selectedLedger.totalPayable > 0 ? "bg-rose-600 hover:bg-rose-700 text-white" : "bg-emerald-600 hover:bg-emerald-700 text-white"}
-                  >
-                    {selectedLedger.totalPayable > 0 ? "Disburse Payment" : "Collect Payment"}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      variant="outline"
+                      size="sm" 
+                      onClick={() => openEditCreditSettings(selectedLedger.entity)}
+                      className="h-8 text-xs gap-1 border-blue-500/40 text-blue-400 hover:bg-blue-500/10 cursor-pointer"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      Edit Credit Limits
+                    </Button>
+                    <Button 
+                      size="sm" 
+                      onClick={() => {
+                        setPassbookOpen(false);
+                        openPaymentModal(selectedLedger);
+                      }}
+                      className={selectedLedger.totalPayable > 0 ? "bg-rose-600 hover:bg-rose-700 text-white cursor-pointer" : "bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"}
+                    >
+                      {selectedLedger.totalPayable > 0 ? "Disburse Payment" : "Collect Payment"}
+                    </Button>
+                  </div>
                 </div>
               </DialogHeader>
 
@@ -1123,6 +1202,31 @@ export function Credits() {
                   </p>
                 </div>
               </div>
+
+              {/* Configured Credit Policy Details */}
+              {(selectedLedger.entity.credit_limit || selectedLedger.entity.credit_period || selectedLedger.entity.credit_terms) && (
+                <div className="flex flex-wrap items-center justify-between px-3 py-2 rounded-md bg-blue-950/20 border border-blue-800/40 text-xs text-blue-300">
+                  <div className="flex items-center gap-4">
+                    {selectedLedger.entity.credit_limit && (
+                      <div>
+                        <span className="text-muted-foreground">Assigned Credit Limit: </span>
+                        <span className="font-bold">₹{Number(selectedLedger.entity.credit_limit).toLocaleString()}</span>
+                      </div>
+                    )}
+                    {selectedLedger.entity.credit_period && (
+                      <div>
+                        <span className="text-muted-foreground">Credit Period: </span>
+                        <span className="font-bold">{selectedLedger.entity.credit_period} Days</span>
+                      </div>
+                    )}
+                  </div>
+                  {selectedLedger.entity.credit_terms && (
+                    <div className="text-muted-foreground text-[11px] truncate max-w-xs">
+                      Terms: {selectedLedger.entity.credit_terms}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* SECTION A: INVOICES / BILLS (With Delete Option) */}
               <div className="space-y-2 mt-4">
@@ -1273,6 +1377,96 @@ export function Credits() {
               </DialogFooter>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ========================================================= */}
+      {/* 4. EDIT CUSTOMER / SUPPLIER CREDIT SETTINGS MODAL         */}
+      {/* ========================================================= */}
+      <Dialog open={editCreditModalOpen} onOpenChange={setEditCreditModalOpen}>
+        <DialogContent className="sm:max-w-[480px]">
+          <form onSubmit={handleSaveCreditSettings}>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="h-5 w-5 text-blue-400" />
+                Edit Credit Policy &amp; Terms: {editingCreditEntity?.name}
+              </DialogTitle>
+              <DialogDescription>
+                Configure credit limits, interest/credit periods, and commercial terms. Editing credit settings preserves existing transaction records and outstanding balances.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-3 text-xs">
+              <div className="space-y-1.5">
+                <Label htmlFor="creditLimit">Authorized Credit Limit (₹)</Label>
+                <Input
+                  id="creditLimit"
+                  type="number"
+                  placeholder="e.g. 200000 (leave blank for unlimited)"
+                  value={editCreditLimit}
+                  onChange={(e) => setEditCreditLimit(e.target.value)}
+                  min="0"
+                  step="1000"
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="creditPeriod">Standard Credit Period (Days)</Label>
+                <Input
+                  id="creditPeriod"
+                  type="number"
+                  placeholder="e.g. 30"
+                  value={editCreditPeriod}
+                  onChange={(e) => setEditCreditPeriod(e.target.value)}
+                  min="0"
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="creditTerms">Commercial Terms / Notes</Label>
+                <Input
+                  id="creditTerms"
+                  placeholder="e.g. 30 days net, 2% monthly post-due interest"
+                  value={editCreditTerms}
+                  onChange={(e) => setEditCreditTerms(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="creditNotes">Internal Contact Remarks</Label>
+                <Input
+                  id="creditNotes"
+                  placeholder="Notes on client creditworthiness or arrangements"
+                  value={editCreditNotes}
+                  onChange={(e) => setEditCreditNotes(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+
+            <DialogFooter className="pt-2 border-t">
+              <Button type="button" variant="outline" onClick={() => setEditCreditModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button 
+                type="submit" 
+                disabled={editCreditSaving}
+                className="bg-blue-600 hover:bg-blue-500 text-white cursor-pointer"
+              >
+                {editCreditSaving ? (
+                  <span className="flex items-center gap-1.5">
+                    <IosSpinner size="sm" className="text-white" />
+                    Saving...
+                  </span>
+                ) : (
+                  "Save Credit Settings"
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
     </div>

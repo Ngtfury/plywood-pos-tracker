@@ -189,6 +189,30 @@ CREATE TABLE IF NOT EXISTS public.bank_accounts (
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Keep the application-facing branch name available on databases created from
+-- older versions of the schema.
+ALTER TABLE public.bank_accounts
+    ADD COLUMN IF NOT EXISTS branch_name TEXT;
+ALTER TABLE public.bank_accounts
+    ADD COLUMN IF NOT EXISTS current_balance NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'bank_accounts'
+          AND column_name = 'branch'
+    ) THEN
+        UPDATE public.bank_accounts
+        SET branch_name = branch
+        WHERE branch_name IS NULL
+          AND branch IS NOT NULL;
+    END IF;
+END;
+$$;
+
 -- 2.8 Stock Balances Table
 CREATE TABLE IF NOT EXISTS public.stock_balances (
     id                 TEXT PRIMARY KEY DEFAULT 'sb_' || gen_random_uuid()::text,
@@ -381,6 +405,31 @@ CREATE TABLE IF NOT EXISTS public.voucher_sequences (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 2.20 Units of Measurement Table
+CREATE TABLE IF NOT EXISTS public.units_of_measurement (
+    id                TEXT PRIMARY KEY DEFAULT 'uom_' || gen_random_uuid()::text,
+    name              TEXT NOT NULL,
+    abbreviation      TEXT NOT NULL,
+    conversion_factor NUMERIC(12, 6) NOT NULL DEFAULT 1.000000,
+    base_unit         TEXT DEFAULT 'pieces',
+    description       TEXT,
+    is_active         BOOLEAN NOT NULL DEFAULT true,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 2.21 Edit Audit Logs Table
+CREATE TABLE IF NOT EXISTS public.edit_audit_logs (
+    id              TEXT PRIMARY KEY DEFAULT 'audit_' || gen_random_uuid()::text,
+    entity_type     TEXT NOT NULL,
+    record_id       TEXT NOT NULL,
+    user_identifier TEXT DEFAULT 'master_user',
+    action          TEXT NOT NULL DEFAULT 'UPDATE',
+    old_values      JSONB,
+    new_values      JSONB,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- =========================================================================
 -- 3. SCHEMA HARDENING & BACKWARD-COMPATIBLE COLUMN ADDITIONS
 -- =========================================================================
@@ -428,6 +477,40 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'salary_records' AND column_name = 'payment_journal_id') THEN
         ALTER TABLE public.salary_records ADD COLUMN payment_journal_id TEXT REFERENCES public.journal_entries(id) ON DELETE SET NULL;
     END IF;
+
+    -- Master edit functionality fields: Entities (Customers & Suppliers)
+    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS email TEXT;
+    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS alt_phone TEXT;
+    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS gstin TEXT;
+    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS contact_person TEXT;
+    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS payment_terms TEXT;
+    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(14, 2) DEFAULT NULL;
+    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS credit_period INTEGER DEFAULT NULL;
+    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS credit_terms TEXT DEFAULT NULL;
+
+    -- Products & Variants
+    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS sku TEXT;
+    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS brand TEXT;
+    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS grade TEXT;
+    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(14, 2) DEFAULT NULL;
+    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS selling_price NUMERIC(14, 2) DEFAULT NULL;
+    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS wholesale_price NUMERIC(14, 2) DEFAULT NULL;
+    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS min_stock_level NUMERIC(14, 2) DEFAULT NULL;
+
+    ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(14, 2) DEFAULT NULL;
+    ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS selling_price NUMERIC(14, 2) DEFAULT NULL;
+    ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS wholesale_price NUMERIC(14, 2) DEFAULT NULL;
+    ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS grade TEXT DEFAULT NULL;
+    ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS min_stock_level NUMERIC(14, 2) DEFAULT NULL;
+
+    -- Categories & Warehouses
+    ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS description TEXT;
+    ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS location TEXT;
+    ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS description TEXT;
+    ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS join_date DATE NOT NULL DEFAULT CURRENT_DATE;
+    ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS bank_account_no TEXT;
+    ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS ifsc TEXT;
+    ALTER TABLE public.partners ADD COLUMN IF NOT EXISTS address TEXT;
 END;
 $$;
 
@@ -565,6 +648,8 @@ CREATE INDEX IF NOT EXISTS idx_journal_lines_acc        ON public.journal_lines 
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_accounts_be_accno
     ON public.bank_accounts (business_entity_id, account_no);
+CREATE INDEX IF NOT EXISTS idx_transactions_bank_account
+    ON public.transactions ((custom_data->>'bank_account_id'));
 
 -- =========================================================================
 -- 6. STORED PROCEDURES (ATOMIC, ROW-LOCKED, ZERO-RACE-CONDITION RPCS)
@@ -1432,6 +1517,19 @@ BEGIN
     IF r.id IS NULL OR p_amount <= 0 OR (r.paid_amount + p_amount) > r.booked_amount THEN
         RAISE EXCEPTION 'Invalid salary payment amount or record not found';
     END IF;
+    IF p_method IN ('bank', 'upi') THEN
+        IF p_bank_id IS NULL THEN
+            RAISE EXCEPTION 'A bank account is required for this payment method';
+        END IF;
+        PERFORM 1 FROM public.bank_accounts
+        WHERE id = p_bank_id AND is_active
+        FOR UPDATE;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Selected bank account is not active or does not exist';
+        END IF;
+    ELSE
+        p_bank_id := NULL;
+    END IF;
 
     jid := public.post_journal_entry(
         r.business_entity_id,
@@ -1453,6 +1551,9 @@ BEGIN
         payment_date       = p_date,
         payment_journal_id = jid
     WHERE id = p_record_id;
+    IF p_bank_id IS NOT NULL THEN
+        PERFORM public.refresh_bank_account_balance(p_bank_id);
+    END IF;
 END;
 $$;
 
@@ -1551,6 +1652,309 @@ INSERT INTO public.erp_settings (key, value) VALUES
     ('sqft_to_sqm_factor',  '0.0929')
 ON CONFLICT (key) DO NOTHING;
 
+-- 7.5 Seed Default Units of Measurement
+INSERT INTO public.units_of_measurement (id, name, abbreviation, conversion_factor, base_unit, description)
+VALUES
+    ('uom_sheets', 'Sheets', 'sheets', 1.000000, 'sheets', 'Standard manufactured plywood sheet units'),
+    ('uom_pieces', 'Pieces', 'pcs', 1.000000, 'pieces', 'Single unit items and hardware pieces'),
+    ('uom_sqft', 'Square Feet', 'sqft', 1.000000, 'sqft', 'Standard surface area unit for plywood billing'),
+    ('uom_sqm', 'Square Meters', 'sqm', 0.092900, 'sqft', 'Metric surface area (1 sqft ≈ 0.0929 sqm)'),
+    ('uom_kg', 'Kilograms', 'kg', 1.000000, 'kg', 'Weight unit for resin, glue and raw chemicals'),
+    ('uom_litre', 'Litres', 'ltr', 1.000000, 'litre', 'Volume unit for liquid resins and coatings')
+ON CONFLICT (id) DO NOTHING;
+
+-- -------------------------------------------------------------------------
+-- FN 6.11: Bank balance calculation and atomic Quick Entry posting
+-- -------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.calculate_bank_account_balance(p_bank_account_id TEXT)
+RETURNS NUMERIC
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT ROUND(
+        COALESCE((SELECT opening_balance FROM public.bank_accounts WHERE id = p_bank_account_id), 0)
+        + COALESCE((
+            SELECT SUM(
+                CASE WHEN t.type = 'IN' THEN
+                    COALESCE(NULLIF(t.custom_data->>'bank_amount', '')::NUMERIC, 0)
+                ELSE
+                    -COALESCE(NULLIF(t.custom_data->>'bank_amount', '')::NUMERIC, 0)
+                END
+            )
+            FROM public.transactions t
+            WHERE t.custom_data->>'bank_account_id' = p_bank_account_id
+              AND COALESCE(NULLIF(t.custom_data->>'bank_amount', '')::NUMERIC, 0) > 0
+        ), 0)
+        + COALESCE((
+            SELECT SUM(
+                CASE WHEN v.voucher_type IN ('sales', 'receipt') THEN v.paid_amount
+                     ELSE -v.paid_amount
+                END
+            )
+            FROM public.vouchers v
+            WHERE v.bank_account_id = p_bank_account_id
+              AND v.status = 'posted'
+              AND v.payment_method IN ('bank', 'cheque', 'upi')
+        ), 0)
+        - COALESCE((
+            SELECT SUM(s.paid_amount)
+            FROM public.salary_records s
+            WHERE s.bank_account_id = p_bank_account_id
+              AND s.status IN ('partial', 'paid')
+              AND s.payment_method IN ('bank', 'cheque', 'upi')
+        ), 0),
+        2
+    );
+$$;
+
+CREATE OR REPLACE FUNCTION public.refresh_bank_account_balance(p_bank_account_id TEXT)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_balance NUMERIC;
+BEGIN
+    PERFORM 1 FROM public.bank_accounts WHERE id = p_bank_account_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Bank account % was not found', p_bank_account_id;
+    END IF;
+
+    v_balance := public.calculate_bank_account_balance(p_bank_account_id);
+    IF v_balance < 0 THEN
+        RAISE EXCEPTION 'Bank account % cannot have a negative available balance', p_bank_account_id;
+    END IF;
+
+    UPDATE public.bank_accounts
+    SET current_balance = v_balance
+    WHERE id = p_bank_account_id;
+
+    RETURN v_balance;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.get_bank_accounts_with_balances(p_business_entity_id TEXT DEFAULT NULL)
+RETURNS TABLE (
+    id TEXT,
+    business_entity_id TEXT,
+    bank_name TEXT,
+    account_no TEXT,
+    branch_name TEXT,
+    ifsc TEXT,
+    opening_balance NUMERIC,
+    current_balance NUMERIC,
+    is_active BOOLEAN,
+    business_entity_name TEXT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_account_id TEXT;
+BEGIN
+    FOR v_account_id IN
+        SELECT b.id
+        FROM public.bank_accounts b
+        WHERE p_business_entity_id IS NULL OR b.business_entity_id = p_business_entity_id
+        FOR UPDATE
+    LOOP
+        PERFORM public.refresh_bank_account_balance(v_account_id);
+    END LOOP;
+
+    RETURN QUERY
+    SELECT b.id, b.business_entity_id, b.bank_name, b.account_no,
+           b.branch_name,
+           b.ifsc, b.opening_balance, b.current_balance, b.is_active,
+           be.name AS business_entity_name
+    FROM public.bank_accounts b
+    LEFT JOIN public.business_entities be ON be.id = b.business_entity_id
+    WHERE p_business_entity_id IS NULL OR b.business_entity_id = p_business_entity_id
+    ORDER BY b.bank_name;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.post_quick_transaction_atomic(p_transaction JSONB)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_id TEXT := p_transaction->>'id';
+    v_type TEXT := p_transaction->>'type';
+    v_bank_account_id TEXT := NULLIF(p_transaction->'custom_data'->>'bank_account_id', '');
+    v_bank_amount NUMERIC := COALESCE(NULLIF(p_transaction->'custom_data'->>'bank_amount', '')::NUMERIC, 0);
+    v_inserted_id TEXT;
+BEGIN
+    IF v_id IS NULL OR v_type NOT IN ('IN', 'OUT') THEN
+        RAISE EXCEPTION 'A valid transaction id and type are required';
+    END IF;
+    IF COALESCE((p_transaction->>'amount')::NUMERIC, 0) <= 0 THEN
+        RAISE EXCEPTION 'Transaction amount must be greater than zero';
+    END IF;
+    IF v_bank_amount < 0 THEN
+        RAISE EXCEPTION 'Bank amount cannot be negative';
+    END IF;
+    IF v_bank_amount > 0 AND v_bank_account_id IS NULL THEN
+        RAISE EXCEPTION 'A bank account is required for a bank payment';
+    END IF;
+    IF v_bank_account_id IS NOT NULL THEN
+        PERFORM 1 FROM public.bank_accounts WHERE id = v_bank_account_id AND is_active FOR UPDATE;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Selected bank account is not active or does not exist';
+        END IF;
+    END IF;
+
+    INSERT INTO public.transactions (
+        id, type, amount, total_amount, paid_amount, balance_due, credit_status,
+        due_date, date, category_id, entity_id, product_id, quantity, description,
+        notes, reference, custom_data
+    )
+    VALUES (
+        v_id, v_type, (p_transaction->>'amount')::NUMERIC,
+        NULLIF(p_transaction->>'total_amount', '')::NUMERIC,
+        NULLIF(p_transaction->>'paid_amount', '')::NUMERIC,
+        COALESCE(NULLIF(p_transaction->>'balance_due', '')::NUMERIC, 0),
+        COALESCE(p_transaction->>'credit_status', 'PAID'),
+        NULLIF(p_transaction->>'due_date', '')::TIMESTAMPTZ,
+        COALESCE(NULLIF(p_transaction->>'date', '')::TIMESTAMPTZ, NOW()),
+        NULLIF(p_transaction->>'category_id', ''),
+        NULLIF(p_transaction->>'entity_id', ''),
+        NULLIF(p_transaction->>'product_id', ''),
+        NULLIF(p_transaction->>'quantity', '')::NUMERIC,
+        NULLIF(p_transaction->>'description', ''),
+        NULLIF(p_transaction->>'notes', ''),
+        NULLIF(p_transaction->>'reference', ''),
+        COALESCE(p_transaction->'custom_data', '{}'::JSONB)
+    )
+    ON CONFLICT (id) DO NOTHING
+    RETURNING id INTO v_inserted_id;
+
+    IF v_inserted_id IS NULL THEN
+        RETURN v_id;
+    END IF;
+
+    IF v_bank_account_id IS NOT NULL THEN
+        PERFORM public.refresh_bank_account_balance(v_bank_account_id);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.update_quick_transaction_atomic(p_transaction JSONB)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_id TEXT := p_transaction->>'id';
+    v_type TEXT := p_transaction->>'type';
+    v_old_bank_account_id TEXT;
+    v_new_bank_account_id TEXT := NULLIF(p_transaction->'custom_data'->>'bank_account_id', '');
+    v_bank_amount NUMERIC := COALESCE(NULLIF(p_transaction->'custom_data'->>'bank_amount', '')::NUMERIC, 0);
+BEGIN
+    IF v_id IS NULL OR v_type NOT IN ('IN', 'OUT') THEN RAISE EXCEPTION 'A valid transaction id and type are required'; END IF;
+    IF COALESCE((p_transaction->>'amount')::NUMERIC, 0) <= 0 THEN RAISE EXCEPTION 'Transaction amount must be greater than zero'; END IF;
+    IF v_bank_amount < 0 THEN RAISE EXCEPTION 'Bank amount cannot be negative'; END IF;
+    IF v_bank_amount > 0 AND v_new_bank_account_id IS NULL THEN RAISE EXCEPTION 'A bank account is required for a bank payment'; END IF;
+
+    SELECT NULLIF(custom_data->>'bank_account_id', '') INTO v_old_bank_account_id
+    FROM public.transactions WHERE id = v_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'Transaction % was not found', v_id; END IF;
+    IF v_old_bank_account_id IS NOT NULL THEN
+        PERFORM 1 FROM public.bank_accounts WHERE id = v_old_bank_account_id FOR UPDATE;
+        IF NOT FOUND THEN RAISE EXCEPTION 'The original bank account no longer exists'; END IF;
+    END IF;
+    IF v_new_bank_account_id IS NOT NULL THEN
+        PERFORM 1 FROM public.bank_accounts WHERE id = v_new_bank_account_id AND is_active FOR UPDATE;
+        IF NOT FOUND THEN RAISE EXCEPTION 'Selected bank account is not active or does not exist'; END IF;
+    END IF;
+
+    UPDATE public.transactions SET
+        type = v_type, amount = (p_transaction->>'amount')::NUMERIC,
+        total_amount = NULLIF(p_transaction->>'total_amount', '')::NUMERIC,
+        paid_amount = NULLIF(p_transaction->>'paid_amount', '')::NUMERIC,
+        balance_due = COALESCE(NULLIF(p_transaction->>'balance_due', '')::NUMERIC, 0),
+        credit_status = COALESCE(p_transaction->>'credit_status', 'PAID'),
+        due_date = NULLIF(p_transaction->>'due_date', '')::TIMESTAMPTZ,
+        date = COALESCE(NULLIF(p_transaction->>'date', '')::TIMESTAMPTZ, NOW()),
+        category_id = NULLIF(p_transaction->>'category_id', ''),
+        entity_id = NULLIF(p_transaction->>'entity_id', ''),
+        product_id = NULLIF(p_transaction->>'product_id', ''),
+        quantity = NULLIF(p_transaction->>'quantity', '')::NUMERIC,
+        description = NULLIF(p_transaction->>'description', ''),
+        notes = NULLIF(p_transaction->>'notes', ''),
+        reference = NULLIF(p_transaction->>'reference', ''),
+        custom_data = COALESCE(p_transaction->'custom_data', '{}'::JSONB)
+    WHERE id = v_id;
+
+    IF v_old_bank_account_id IS NOT NULL THEN PERFORM public.refresh_bank_account_balance(v_old_bank_account_id); END IF;
+    IF v_new_bank_account_id IS NOT NULL
+       AND v_new_bank_account_id IS DISTINCT FROM v_old_bank_account_id THEN
+        PERFORM public.refresh_bank_account_balance(v_new_bank_account_id);
+    END IF;
+    RETURN v_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.delete_transactions_atomic(p_ids TEXT[])
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_bank_account_id TEXT;
+BEGIN
+    FOR v_bank_account_id IN
+        SELECT DISTINCT NULLIF(t.custom_data->>'bank_account_id', '')
+        FROM public.transactions t
+        WHERE t.id = ANY(p_ids)
+          AND NULLIF(t.custom_data->>'bank_account_id', '') IS NOT NULL
+    LOOP
+        PERFORM 1 FROM public.bank_accounts WHERE id = v_bank_account_id FOR UPDATE;
+        DELETE FROM public.transactions WHERE id = ANY(p_ids);
+        PERFORM public.refresh_bank_account_balance(v_bank_account_id);
+    END LOOP;
+
+    DELETE FROM public.transactions WHERE id = ANY(p_ids);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.delete_bank_account(p_bank_account_id TEXT)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    PERFORM 1 FROM public.bank_accounts WHERE id = p_bank_account_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Bank account % was not found', p_bank_account_id;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM public.transactions
+        WHERE custom_data->>'bank_account_id' = p_bank_account_id
+    ) OR EXISTS (
+        SELECT 1 FROM public.vouchers WHERE bank_account_id = p_bank_account_id
+    ) OR EXISTS (
+        SELECT 1 FROM public.salary_records WHERE bank_account_id = p_bank_account_id
+    ) OR EXISTS (
+        SELECT 1 FROM public.bank_statement_transactions WHERE bank_account_id = p_bank_account_id
+    ) THEN
+        RAISE EXCEPTION 'Bank account has financial history and cannot be deleted. Deactivate it instead.';
+    END IF;
+
+    DELETE FROM public.bank_accounts WHERE id = p_bank_account_id;
+END;
+$$;
+
 -- =========================================================================
 -- 8. ROW LEVEL SECURITY (RLS) & AUDIT ZERO-DELETE POLICIES
 -- =========================================================================
@@ -1581,6 +1985,21 @@ ALTER TABLE public.bank_statement_transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.bank_reconciliation_matches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.erp_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.voucher_sequences ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.units_of_measurement ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.edit_audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- Policies for Units and Audit Logs
+DROP POLICY IF EXISTS "Allow public all access on units_of_measurement" ON public.units_of_measurement;
+CREATE POLICY "Allow public all access on units_of_measurement" 
+    ON public.units_of_measurement FOR ALL 
+    TO public, anon, authenticated 
+    USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public all access on edit_audit_logs" ON public.edit_audit_logs;
+CREATE POLICY "Allow public all access on edit_audit_logs" 
+    ON public.edit_audit_logs FOR ALL 
+    TO public, anon, authenticated 
+    USING (true) WITH CHECK (true);
 
 -- 8.1 POS Policies (Full access)
 DROP POLICY IF EXISTS "Allow public all access on categories" ON public.categories;

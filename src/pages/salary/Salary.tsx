@@ -70,6 +70,7 @@ export function Salary() {
   const [payBankId, setPayBankId] = useState("");
   const [payDate, setPayDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [payRef, setPayRef] = useState("");
+  const [payValidationError, setPayValidationError] = useState("");
 
   const loadData = () => {
     setLoading(true);
@@ -80,7 +81,7 @@ export function Salary() {
       }),
       getEmployees(),
       getPartners(),
-      getBankAccounts(selectedEntityId || undefined),
+      getBankAccounts(),
     ])
       .then(([recList, empList, ptrList, bankList]) => {
         setRecords(recList);
@@ -178,22 +179,32 @@ export function Salary() {
     setActiveRecord(rec);
     setPayAmount(rec.pending_amount.toString());
     setPayMethod("bank");
-    setPayBankId(bankAccounts[0]?.id || "");
+    setPayBankId(rec.bank_account_id || bankAccounts[0]?.id || "");
     setPayDate(new Date().toISOString().split("T")[0]);
     setPayRef("");
+    setPayValidationError("");
     setPayDialogOpen(true);
   };
 
   const handlePaySalarySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeRecord) return;
+    setPayValidationError("");
     const pAmt = parseFloat(payAmount);
     if (!pAmt || pAmt <= 0) {
-      alert("Please specify a valid payment amount.");
+      setPayValidationError("Please specify a valid payment amount.");
       return;
     }
     if (pAmt > activeRecord.pending_amount) {
-      alert(`Amount exceeds pending salary balance (₹${activeRecord.pending_amount}).`);
+      setPayValidationError(`Amount exceeds pending salary balance (₹${activeRecord.pending_amount}).`);
+      return;
+    }
+    if (payMethod !== "cash" && !payBankId) {
+      setPayValidationError("Select a bank account for this payment.");
+      return;
+    }
+    if (payMethod !== "cash" && pAmt > Number(selectedPayBank?.current_balance || 0)) {
+      setPayValidationError("Payment exceeds the selected bank account's available balance.");
       return;
     }
 
@@ -230,6 +241,7 @@ export function Salary() {
   const totalBooked = useMemo(() => records.reduce((s, r) => s + (Number(r.booked_amount) || 0), 0), [records]);
   const totalPaid = useMemo(() => records.reduce((s, r) => s + (Number(r.paid_amount) || 0), 0), [records]);
   const totalPending = useMemo(() => records.reduce((s, r) => s + (Number(r.pending_amount) || 0), 0), [records]);
+  const selectedPayBank = bankAccounts.find((bank) => bank.id === payBankId);
 
   if (loading) {
     return (
@@ -643,16 +655,32 @@ export function Salary() {
                         <SelectValue placeholder="Select Bank" />
                       </SelectTrigger>
                       <SelectContent>
-                        {bankAccounts.map((b) => (
+                        {bankAccounts.filter((b) => b.is_active).map((b) => (
                           <SelectItem key={b.id} value={b.id}>
                             {b.bank_name} ({b.account_no})
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    {selectedPayBank && (
+                      <div className="rounded border bg-background/70 px-2 py-1.5 text-[11px]">
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Available Balance</span>
+                          <span className="font-semibold">
+                            ₹{Number(selectedPayBank.current_balance).toLocaleString("en-IN", {
+                              minimumFractionDigits: 2,
+                            })}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
+
+              {payValidationError && (
+                <p className="text-[11px] text-rose-400">{payValidationError}</p>
+              )}
 
               <div className="space-y-1">
                 <Label className="text-xs">Bank / UPI / UTR Reference</Label>

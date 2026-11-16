@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getCategories, getEntities, addTransaction, getCustomFields, Category, Entity, CustomFieldDef } from "@/lib/db/queries";
+import { getCategories, getEntities, addTransaction, updateTransaction, getCustomFields, Category, Entity, CustomFieldDef, Transaction } from "@/lib/db/queries";
 import { getBankAccounts } from "@/lib/db/accounting";
 import type { BankAccount } from "@/lib/db/erp";
 import { useStore } from "@/store";
@@ -27,9 +27,10 @@ interface QuickEntryModalProps {
   type: "IN" | "OUT";
   isOpen: boolean;
   onClose: () => void;
+  initialTransaction?: Transaction | null;
 }
 
-export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps) {
+export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = null }: QuickEntryModalProps) {
   const [amount, setAmount] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [entityId, setEntityId] = useState("");
@@ -46,6 +47,7 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
   const [bankAmount, setBankAmount] = useState("");
   const [bankAccountId, setBankAccountId] = useState("");
   const [paymentReference, setPaymentReference] = useState("");
+  const [validationError, setValidationError] = useState("");
   const [paymentMode, setPaymentMode] = useState<"cash_only" | "bank_transfer_only" | "cash_and_bank">("cash_only");
 
   const [categories, setCategories] = useState<Category[]>([]);
@@ -61,34 +63,43 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
     getCategories(type).then(setCategories).catch(console.error);
     getEntities().then(setEntities).catch(console.error);
     getCustomFields().then(setCustomFields).catch(console.error);
-    if (type === "IN") {
-      getBankAccounts().then(setBankAccounts).catch(console.error);
-    }
+    getBankAccounts().then(setBankAccounts).catch(console.error);
   }, [type, refreshTrigger]);
 
   // Reset form when modal opens
   useEffect(() => {
     if (isOpen) {
-      setAmount("");
-      setCategoryId("");
-      setEntityId("none");
-      setDate(new Date().toISOString().split('T')[0]);
-      setNotes("");
-      setCustomData({});
+      const payment = initialTransaction?.custom_data || {};
+      const initialAmount = initialTransaction ? String(initialTransaction.amount) : "";
+      setAmount(initialAmount);
+      setCategoryId(initialTransaction?.category_id || "");
+      setEntityId(initialTransaction?.entity_id || "none");
+      setDate(initialTransaction?.date ? initialTransaction.date.slice(0, 10) : new Date().toISOString().split('T')[0]);
+      setNotes(initialTransaction?.notes || "");
+      setCustomData(initialTransaction?.custom_data || {});
       setIsCredit(false);
       setTotalBillAmount("");
       setPaidNowAmount("");
       setDueDate("");
-      setCashAmount("");
-      setBankAmount("");
-      setBankAccountId("");
-      setPaymentReference("");
-      setPaymentMode("cash_only");
+      setCashAmount(initialTransaction ? String(payment.cash_amount ?? initialTransaction.amount) : "");
+      setBankAmount(initialTransaction ? String(payment.bank_amount ?? 0) : "");
+      setBankAccountId(payment.bank_account_id || "");
+      setPaymentReference(payment.payment_reference || initialTransaction?.reference || "");
+      setValidationError("");
+      if (initialTransaction) {
+        setPaymentMode(payment.payment_method || (Number(payment.bank_amount) > 0 ? "bank_transfer_only" : "cash_only"));
+        setIsCredit((initialTransaction.balance_due || 0) > 0);
+        setTotalBillAmount(String(initialTransaction.total_amount ?? initialTransaction.amount));
+        setPaidNowAmount(String(initialTransaction.paid_amount ?? initialTransaction.amount));
+        setDueDate(initialTransaction.due_date ? initialTransaction.due_date.slice(0, 10) : "");
+      } else {
+        setPaymentMode("cash_only");
+      }
     }
-  }, [isOpen, type, refreshTrigger]);
+  }, [isOpen, type, refreshTrigger, initialTransaction]);
 
   useEffect(() => {
-    if (type !== "IN" || isCredit) return;
+    if (isCredit) return;
     if (paymentMode === "cash_only") {
       setCashAmount(amount);
       setBankAmount("0");
@@ -106,19 +117,43 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
   const receivedCash = parseFloat(cashAmount) || 0;
   const receivedBank = parseFloat(bankAmount) || 0;
   const receivedBreakdownTotal = receivedCash + receivedBank;
+  const selectedBankAccount = bankAccounts.find((bank) => bank.id === bankAccountId);
+
+  const handleBankAccountChange = async (id: string) => {
+    setBankAccountId(id);
+    try {
+      setBankAccounts(await getBankAccounts());
+    } catch (error) {
+      console.error("Failed to refresh bank account balance", error);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!categoryId) return;
-    if (!isCredit && !amount) return;
-    if (isCredit && (!totalBillAmount || entityId === "none")) return;
-    if (type === "IN" && !isCredit) {
+    setValidationError("");
+    if (!categoryId) {
+      setValidationError("Select a category.");
+      return;
+    }
+    if (!isCredit && (!amount || parseFloat(amount) <= 0)) {
+      setValidationError("Amount must be greater than zero.");
+      return;
+    }
+    if (isCredit && (!totalBillAmount || entityId === "none")) {
+      setValidationError("Enter the bill amount and select an entity.");
+      return;
+    }
+    if (!isCredit) {
       if (Math.abs(receivedBreakdownTotal - (parseFloat(amount) || 0)) > 0.005) {
         alert("Cash Amount and Bank Transfer Amount must equal Total Amount Received.");
         return;
       }
       if (receivedBank > 0 && !bankAccountId) {
-        alert("Select the receiving bank account for the bank transfer.");
+        setValidationError(`Select the ${type === "IN" ? "receiving" : "paying"} bank account for the bank transfer.`);
+        return;
+      }
+      if (type === "OUT" && receivedBank > Number(selectedBankAccount?.current_balance || 0)) {
+        setValidationError("Expense exceeds the selected bank account's available balance.");
         return;
       }
     }
@@ -129,9 +164,10 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
         const total = parseFloat(totalBillAmount) || 0;
         const paid = parseFloat(paidNowAmount) || 0;
         const balance = Math.max(0, total - paid);
-        const status = balance <= 0 ? 'PAID' : (paid > 0 ? 'PARTIAL' : 'UNPAID');
+        const status: 'PAID' | 'PARTIAL' | 'UNPAID' = balance <= 0 ? 'PAID' : (paid > 0 ? 'PARTIAL' : 'UNPAID');
 
-        await addTransaction({
+        const transaction = {
+          id: initialTransaction?.id,
           type,
           amount: paid, // actual immediate cashflow
           total_amount: total,
@@ -146,17 +182,23 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
           quantity: null,
           description: null,
           notes,
-          custom_data: customData
-        });
+          custom_data: customData,
+        };
+        if (initialTransaction) {
+          await updateTransaction({ ...initialTransaction, ...transaction } as Transaction);
+        } else {
+          await addTransaction(transaction);
+        }
       } else {
         const amt = parseFloat(amount) || 0;
-        await addTransaction({
+        const transaction = {
+          id: initialTransaction?.id,
           type,
           amount: amt,
           total_amount: amt,
           paid_amount: amt,
           balance_due: 0,
-          credit_status: 'PAID',
+          credit_status: 'PAID' as const,
           due_date: null,
           date: date + "T12:00:00Z",
           category_id: categoryId,
@@ -165,15 +207,20 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
           quantity: null,
           description: null,
           notes,
-          custom_data: type === "IN" ? {
+          custom_data: {
             ...customData,
             payment_method: paymentMode,
             cash_amount: receivedCash,
             bank_amount: receivedBank,
             bank_account_id: receivedBank > 0 ? bankAccountId : null,
             payment_reference: paymentReference || null,
-          } : customData
-        });
+          }
+        };
+        if (initialTransaction) {
+          await updateTransaction({ ...initialTransaction, ...transaction } as Transaction);
+        } else {
+          await addTransaction(transaction);
+        }
       }
       triggerRefresh();
       onClose();
@@ -201,7 +248,7 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
       <DialogContent className="sm:max-w-[620px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center justify-between pr-6">
-            <span>Quick {type === "IN" ? "Income" : "Expense"}</span>
+            <span>{initialTransaction ? "Edit" : "Quick"} {type === "IN" ? "Income" : "Expense"}</span>
             <span className="text-xs px-2.5 py-1 rounded-full bg-muted font-normal text-muted-foreground">
               {type === "IN" ? "Sales / Cash Receipt" : "Purchase / Bill Payment"}
             </span>
@@ -276,10 +323,10 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
                   </Select>
                 </div>
               </div>
-              {type === "IN" && (
+              {!isCredit && (
                 <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3.5 space-y-3">
                   <div className="space-y-2">
-                    <Label>Payment Mode</Label>
+                    <Label>{type === "IN" ? "Receipt Mode" : "Payment Mode"}</Label>
                     <Select value={paymentMode} onValueChange={(value) => setPaymentMode(value as typeof paymentMode)}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
@@ -292,7 +339,7 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
 
                   {paymentMode !== "bank_transfer_only" && (
                     <div className="space-y-2">
-                      <Label htmlFor="cashAmount">Cash Amount (₹)</Label>
+                      <Label htmlFor="cashAmount">{type === "IN" ? "Cash Amount (₹)" : "Cash Paid (₹)"}</Label>
                       <Input
                         id="cashAmount"
                         type="number"
@@ -306,7 +353,7 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
                   )}
                   {paymentMode !== "cash_only" && (
                     <div className="space-y-2">
-                      <Label htmlFor="bankAmount">Bank Transfer Amount (₹)</Label>
+                      <Label htmlFor="bankAmount">{type === "IN" ? "Bank Transfer Amount (₹)" : "Bank Paid (₹)"}</Label>
                       <Input
                         id="bankAmount"
                         type="number"
@@ -321,9 +368,11 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
                 {receivedBank > 0 && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label>Receiving Bank Account *</Label>
-                      <Select value={bankAccountId} onValueChange={setBankAccountId}>
-                        <SelectTrigger><SelectValue placeholder="Select receiving bank" /></SelectTrigger>
+                      <Label>{type === "IN" ? "Deposit Bank Account *" : "Bank Account *"}</Label>
+                      <Select value={bankAccountId} onValueChange={handleBankAccountChange}>
+                        <SelectTrigger>
+                          <SelectValue placeholder={`Select ${type === "IN" ? "receiving" : "paying"} bank`} />
+                        </SelectTrigger>
                         <SelectContent>
                           {bankAccounts.filter((bank) => bank.is_active).map((bank) => (
                             <SelectItem key={bank.id} value={bank.id}>
@@ -333,6 +382,27 @@ export function QuickEntryModal({ type, isOpen, onClose }: QuickEntryModalProps)
                         </SelectContent>
                       </Select>
                     </div>
+                    {bankAccountId && (
+                      <div className="rounded-md border bg-background/70 p-3 text-sm">
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Available Balance</span>
+                          <span className="font-semibold">
+                            ₹{Number(selectedBankAccount?.current_balance || 0)
+                              .toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        {type === "OUT" && (
+                          <div className="flex items-center justify-between mt-1">
+                            <span className="text-muted-foreground">Balance After Expense</span>
+                            <span className="font-semibold text-emerald-400">
+                              ₹{(Number(selectedBankAccount?.current_balance || 0) - receivedBank)
+                                .toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                        )}
+                        {validationError && <p className="text-sm text-rose-400">{validationError}</p>}
+                      </div>
+                    )}
                     <div className="space-y-2">
                       <Label htmlFor="paymentReference">Bank Reference / UTR (Optional)</Label>
                       <Input

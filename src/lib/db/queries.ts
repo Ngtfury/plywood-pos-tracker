@@ -1,4 +1,5 @@
 import { getSupabase } from '../supabase';
+import { recordAuditLog } from './audit';
 
 export interface Category {
   id: string;
@@ -6,6 +7,8 @@ export interface Category {
   type: 'IN' | 'OUT' | 'BOTH';
   color: string;
   icon: string;
+  description?: string | null;
+  created_at?: string;
 }
 
 export interface Entity {
@@ -13,8 +16,17 @@ export interface Entity {
   name: string;
   type: string;
   phone: string | null;
+  alt_phone?: string | null;
+  email?: string | null;
   address: string | null;
+  gstin?: string | null;
+  contact_person?: string | null;
+  payment_terms?: string | null;
+  credit_limit?: number | null;
+  credit_period?: number | null;
+  credit_terms?: string | null;
   notes: string | null;
+  created_at?: string;
 }
 
 export interface Transaction {
@@ -103,7 +115,8 @@ export async function addCategory(data: Partial<Category>): Promise<string> {
     name: data.name || 'Unnamed Category',
     type: data.type || 'BOTH',
     color: data.color || '#94a3b8',
-    icon: data.icon || 'tag'
+    icon: data.icon || 'tag',
+    description: data.description || null
   };
   
   const { error } = await supabase.from('categories').insert([newCat]);
@@ -112,6 +125,30 @@ export async function addCategory(data: Partial<Category>): Promise<string> {
     throw error;
   }
   return id;
+}
+
+export async function updateCategory(id: string, data: Partial<Category>, oldData?: Partial<Category>): Promise<void> {
+  const supabase = getSupabase();
+  const updatePayload: Record<string, any> = {};
+  if (data.name !== undefined) updatePayload.name = data.name.trim();
+  if (data.type !== undefined) updatePayload.type = data.type;
+  if (data.color !== undefined) updatePayload.color = data.color;
+  if (data.icon !== undefined) updatePayload.icon = data.icon;
+  if (data.description !== undefined) updatePayload.description = data.description || null;
+
+  const { error } = await supabase.from('categories').update(updatePayload).eq('id', id);
+  if (error) {
+    console.error('Error updating category in Supabase:', error);
+    throw error;
+  }
+
+  await recordAuditLog({
+    entity_type: 'categories',
+    record_id: id,
+    old_values: oldData,
+    new_values: updatePayload,
+    action: 'UPDATE',
+  });
 }
 
 export async function getEntities(): Promise<Entity[]> {
@@ -133,7 +170,15 @@ export async function addEntity(data: Partial<Entity>): Promise<string> {
     name: data.name || 'Unnamed Entity',
     type: data.type || 'Other',
     phone: data.phone || null,
+    alt_phone: data.alt_phone || null,
+    email: data.email || null,
     address: data.address || null,
+    gstin: data.gstin || null,
+    contact_person: data.contact_person || null,
+    payment_terms: data.payment_terms || null,
+    credit_limit: data.credit_limit != null ? Number(data.credit_limit) : null,
+    credit_period: data.credit_period != null ? Number(data.credit_period) : null,
+    credit_terms: data.credit_terms || null,
     notes: data.notes || null
   };
   
@@ -143,6 +188,38 @@ export async function addEntity(data: Partial<Entity>): Promise<string> {
     throw error;
   }
   return id;
+}
+
+export async function updateEntity(id: string, data: Partial<Entity>, oldData?: Partial<Entity>): Promise<void> {
+  const supabase = getSupabase();
+  const updatePayload: Record<string, any> = {};
+  if (data.name !== undefined) updatePayload.name = data.name.trim();
+  if (data.type !== undefined) updatePayload.type = data.type;
+  if (data.phone !== undefined) updatePayload.phone = data.phone || null;
+  if (data.alt_phone !== undefined) updatePayload.alt_phone = data.alt_phone || null;
+  if (data.email !== undefined) updatePayload.email = data.email || null;
+  if (data.address !== undefined) updatePayload.address = data.address || null;
+  if (data.gstin !== undefined) updatePayload.gstin = data.gstin || null;
+  if (data.contact_person !== undefined) updatePayload.contact_person = data.contact_person || null;
+  if (data.payment_terms !== undefined) updatePayload.payment_terms = data.payment_terms || null;
+  if (data.credit_limit !== undefined) updatePayload.credit_limit = data.credit_limit != null ? Number(data.credit_limit) : null;
+  if (data.credit_period !== undefined) updatePayload.credit_period = data.credit_period != null ? Number(data.credit_period) : null;
+  if (data.credit_terms !== undefined) updatePayload.credit_terms = data.credit_terms || null;
+  if (data.notes !== undefined) updatePayload.notes = data.notes || null;
+
+  const { error } = await supabase.from('entities').update(updatePayload).eq('id', id);
+  if (error) {
+    console.error('Error updating entity in Supabase:', error);
+    throw error;
+  }
+
+  await recordAuditLog({
+    entity_type: 'entities',
+    record_id: id,
+    old_values: oldData,
+    new_values: updatePayload,
+    action: 'UPDATE',
+  });
 }
 
 export async function getTransactions(): Promise<Transaction[]> {
@@ -239,13 +316,59 @@ export async function addTransaction(data: Omit<Transaction, "id" | "reference">
     quantity: data.quantity || null,
     description: data.description || null,
     notes: data.notes || null,
-    reference: null,
+    reference: data.custom_data?.payment_reference || null,
     custom_data: data.custom_data || {}
   };
 
-  const { error } = await supabase.from('transactions').insert([newTxn]);
+  const { error } = await supabase.rpc('post_quick_transaction_atomic', {
+    p_transaction: newTxn,
+  });
   if (error) {
     console.error('Error adding transaction to Supabase:', error);
+    throw error;
+  }
+}
+
+export async function updateTransaction(data: Transaction): Promise<void> {
+  const supabase = getSupabase();
+  const totalAmount = data.total_amount != null ? Number(data.total_amount) : Number(data.amount);
+  const paidAmount = data.paid_amount != null ? Number(data.paid_amount) : Number(data.amount);
+  const balanceDue = data.balance_due != null ? Number(data.balance_due) : Math.max(0, totalAmount - paidAmount);
+  const bankAmount = Number(data.custom_data?.bank_amount || 0);
+
+  if (!Number.isFinite(data.amount) || data.amount <= 0) {
+    throw new Error("Transaction amount must be greater than zero.");
+  }
+  if (!Number.isFinite(bankAmount) || bankAmount < 0) {
+    throw new Error("Bank amount must be zero or greater.");
+  }
+  if (bankAmount > 0 && !data.custom_data?.bank_account_id) {
+    throw new Error("A bank account is required for a bank payment.");
+  }
+
+  const { error } = await supabase.rpc('update_quick_transaction_atomic', {
+    p_transaction: {
+      id: data.id,
+      type: data.type,
+      amount: Number(data.amount),
+      total_amount: totalAmount,
+      paid_amount: paidAmount,
+      balance_due: balanceDue,
+      credit_status: data.credit_status || 'PAID',
+      due_date: data.due_date || null,
+      date: data.date,
+      category_id: data.category_id || null,
+      entity_id: data.entity_id || null,
+      product_id: data.product_id || null,
+      quantity: data.quantity || null,
+      description: data.description || null,
+      notes: data.notes || null,
+      reference: data.reference || data.custom_data?.payment_reference || null,
+      custom_data: data.custom_data || {},
+    },
+  });
+  if (error) {
+    console.error('Error updating transaction in Supabase:', error);
     throw error;
   }
 }
@@ -278,6 +401,28 @@ export async function addCustomField(data: Omit<CustomFieldDef, "id">): Promise<
   }
 }
 
+export async function updateCustomField(id: string, data: Partial<CustomFieldDef>, oldData?: Partial<CustomFieldDef>): Promise<void> {
+  const supabase = getSupabase();
+  const updatePayload: Record<string, any> = {};
+  if (data.name !== undefined) updatePayload.name = data.name.trim();
+  if (data.type !== undefined) updatePayload.type = data.type;
+  if (data.apply_to !== undefined) updatePayload.apply_to = data.apply_to;
+
+  const { error } = await supabase.from('custom_fields').update(updatePayload).eq('id', id);
+  if (error) {
+    console.error('Error updating custom field in Supabase:', error);
+    throw error;
+  }
+
+  await recordAuditLog({
+    entity_type: 'custom_fields',
+    record_id: id,
+    old_values: oldData,
+    new_values: updatePayload,
+    action: 'UPDATE',
+  });
+}
+
 export async function deleteCustomFields(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   const supabase = getSupabase();
@@ -291,7 +436,7 @@ export async function deleteCustomFields(ids: string[]): Promise<void> {
 export async function deleteTransactions(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   const supabase = getSupabase();
-  const { error } = await supabase.from('transactions').delete().in('id', ids);
+  const { error } = await supabase.rpc('delete_transactions_atomic', { p_ids: ids });
   if (error) {
     console.error('Error deleting transactions:', error);
     throw error;

@@ -17,7 +17,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  Landmark, PlusCircle, Upload, CheckCircle2, Link2, Unlink
+  Landmark, PlusCircle, Upload, CheckCircle2, Link2, Unlink, Pencil
 } from "lucide-react";
 import type { BankAccount, BankStatementTransaction, Voucher, SalaryRecord } from "@/lib/db/erp";
 import {
@@ -28,6 +28,7 @@ import {
 import {
   getBankStatementTransactions,
   insertBankStatementTransaction,
+  updateBankStatementTransaction,
   matchBankTransaction,
   unmatchBankTransaction,
 } from "@/lib/db/banking";
@@ -57,6 +58,18 @@ export function Banking() {
   const [stmtCredit, setStmtCredit] = useState("");
   const [stmtBalance, setStmtBalance] = useState("");
   const [stmtRef, setStmtRef] = useState("");
+
+  // Edit Statement Modal
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editingStmt, setEditingStmt] = useState<BankStatementTransaction | null>(null);
+  const [savingEditStmt, setSavingEditStmt] = useState(false);
+  const [editDate, setEditDate] = useState("");
+  const [editDesc, setEditDesc] = useState("");
+  const [editDebit, setEditDebit] = useState("");
+  const [editCredit, setEditCredit] = useState("");
+  const [editBalance, setEditBalance] = useState("");
+  const [editRef, setEditRef] = useState("");
+  const [editStmtError, setEditStmtError] = useState<string | null>(null);
 
   // Match Modal
   const [matchModalOpen, setMatchModalOpen] = useState(false);
@@ -152,6 +165,54 @@ export function Banking() {
       alert("Error adding statement row: " + (err.message || err));
     } finally {
       setSavingStmt(false);
+    }
+  };
+
+  const handleOpenEditStatement = (stmt: BankStatementTransaction) => {
+    setEditingStmt(stmt);
+    setEditDate(stmt.txn_date ? stmt.txn_date.split("T")[0] : "");
+    setEditDesc(stmt.description || "");
+    setEditDebit(stmt.debit_amount ? String(stmt.debit_amount) : "");
+    setEditCredit(stmt.credit_amount ? String(stmt.credit_amount) : "");
+    setEditBalance(stmt.balance != null ? String(stmt.balance) : "");
+    setEditRef(stmt.reference || "");
+    setEditStmtError(null);
+    setEditModalOpen(true);
+  };
+
+  const handleUpdateStatement = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingStmt) return;
+    const debit = parseFloat(editDebit) || 0;
+    const credit = parseFloat(editCredit) || 0;
+    if (debit <= 0 && credit <= 0) {
+      setEditStmtError("Please enter either a Debit (withdrawal) or Credit (deposit) amount.");
+      return;
+    }
+
+    setSavingEditStmt(true);
+    setEditStmtError(null);
+    try {
+      await updateBankStatementTransaction(
+        editingStmt.id,
+        {
+          txn_date: editDate + "T12:00:00Z",
+          description: editDesc.trim() || null,
+          debit_amount: debit,
+          credit_amount: credit,
+          balance: editBalance ? parseFloat(editBalance) : undefined,
+          reference: editRef.trim() || null,
+        },
+        editingStmt
+      );
+
+      triggerRefresh();
+      setEditModalOpen(false);
+      setEditingStmt(null);
+    } catch (err: any) {
+      setEditStmtError(err.message || "Failed to update statement entry.");
+    } finally {
+      setSavingEditStmt(false);
     }
   };
 
@@ -333,6 +394,9 @@ export function Banking() {
               <span className="font-bold text-emerald-400">
                 Opening Balance: ₹{Number(activeAccount.opening_balance).toLocaleString()}
               </span>
+              <span className="font-bold text-blue-400">
+                Available Balance: ₹{Number(activeAccount.current_balance).toLocaleString()}
+              </span>
             </div>
           )}
         </div>
@@ -475,14 +539,24 @@ export function Banking() {
                           <Unlink className="h-3 w-3 mr-1" /> Unmatch
                         </Button>
                       ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleOpenMatch(stmt)}
-                          className="h-7 text-xs border-blue-500/40 text-blue-400 hover:bg-blue-500/10 cursor-pointer"
-                        >
-                          <Link2 className="h-3 w-3 mr-1" /> Match
-                        </Button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleOpenEditStatement(stmt)}
+                            className="h-7 text-xs hover:bg-zinc-800 text-zinc-300 hover:text-white cursor-pointer"
+                          >
+                            <Pencil className="h-3 w-3 mr-1 text-emerald-400" /> Edit
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleOpenMatch(stmt)}
+                            className="h-7 text-xs border-blue-500/40 text-blue-400 hover:bg-blue-500/10 cursor-pointer"
+                          >
+                            <Link2 className="h-3 w-3 mr-1" /> Match
+                          </Button>
+                        </div>
                       )}
                     </TableCell>
                   </TableRow>
@@ -585,6 +659,111 @@ export function Banking() {
                 className="bg-emerald-600 hover:bg-emerald-500 text-white h-8 text-xs cursor-pointer"
               >
                 {savingStmt ? "Saving..." : "Add Statement Row"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Statement Entry Modal */}
+      <Dialog open={editModalOpen} onOpenChange={setEditModalOpen}>
+        <DialogContent className="sm:max-w-[460px]">
+          <form onSubmit={handleUpdateStatement}>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="h-4 w-4 text-emerald-400" />
+                Edit Bank Statement Entry
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4 py-3 text-xs">
+              {editStmtError && (
+                <div className="p-2.5 rounded bg-rose-950/40 border border-rose-800/60 text-rose-300 text-xs">
+                  {editStmtError}
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <Label className="text-xs font-semibold">Transaction Date *</Label>
+                <Input
+                  type="date"
+                  value={editDate}
+                  onChange={(e) => setEditDate(e.target.value)}
+                  required
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs font-semibold">Description / Narration *</Label>
+                <Input
+                  placeholder="e.g. NEFT INWARD - ACME CORP"
+                  value={editDesc}
+                  onChange={(e) => setEditDesc(e.target.value)}
+                  required
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold text-rose-400">Withdrawal / Debit (₹)</Label>
+                  <Input
+                    type="number"
+                    placeholder="0.00"
+                    value={editDebit}
+                    onChange={(e) => setEditDebit(e.target.value)}
+                    step="0.01"
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold text-emerald-400">Deposit / Credit (₹)</Label>
+                  <Input
+                    type="number"
+                    placeholder="0.00"
+                    value={editCredit}
+                    onChange={(e) => setEditCredit(e.target.value)}
+                    step="0.01"
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Running Balance (₹)</Label>
+                  <Input
+                    type="number"
+                    placeholder="Optional"
+                    value={editBalance}
+                    onChange={(e) => setEditBalance(e.target.value)}
+                    step="0.01"
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Cheque / UTR #</Label>
+                  <Input
+                    placeholder="Optional"
+                    value={editRef}
+                    onChange={(e) => setEditRef(e.target.value)}
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setEditModalOpen(false)} className="h-8 text-xs">
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={savingEditStmt || (!editDebit && !editCredit)}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white h-8 text-xs cursor-pointer"
+              >
+                {savingEditStmt ? "Saving Changes..." : "Save Changes"}
               </Button>
             </DialogFooter>
           </form>

@@ -3,6 +3,7 @@
 // src/lib/db/banking.ts
 // ============================================================
 import { getSupabase } from '../supabase';
+import { recordAuditLog } from './audit';
 import type { BankStatementTransaction } from './erp';
 
 export async function getBankStatementTransactions(params: {
@@ -69,6 +70,35 @@ export async function insertBankStatementTransaction(data: {
     console.error('Error inserting bank statement txn:', error); throw error;
   }
   return id;
+}
+
+export async function updateBankStatementTransaction(
+  id: string,
+  data: Partial<BankStatementTransaction>,
+  oldData?: Partial<BankStatementTransaction>
+): Promise<void> {
+  const supabase = getSupabase();
+  const updatePayload: Record<string, any> = {};
+  if (data.txn_date !== undefined) updatePayload.txn_date = data.txn_date;
+  if (data.description !== undefined) updatePayload.description = data.description || null;
+  if (data.debit_amount !== undefined) updatePayload.debit_amount = Number(data.debit_amount) || 0;
+  if (data.credit_amount !== undefined) updatePayload.credit_amount = Number(data.credit_amount) || 0;
+  if (data.balance !== undefined) updatePayload.balance = data.balance != null ? Number(data.balance) : null;
+  if (data.reference !== undefined) updatePayload.reference = data.reference || null;
+
+  const { error } = await supabase.from('bank_statement_transactions').update(updatePayload).eq('id', id);
+  if (error) {
+    console.error('Error updating bank statement transaction:', error);
+    throw error;
+  }
+
+  await recordAuditLog({
+    entity_type: 'bank_statement_transactions',
+    record_id: id,
+    old_values: oldData,
+    new_values: updatePayload,
+    action: 'UPDATE',
+  });
 }
 
 export async function matchBankTransaction(params: {

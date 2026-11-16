@@ -1,13 +1,13 @@
 import { useState, useEffect } from "react";
 import { useStore } from "@/store";
-import { IosLoadingView } from "@/components/ui/IosSpinner";
+import { IosLoadingView, IosSpinner } from "@/components/ui/IosSpinner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -16,9 +16,9 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  Users, Landmark, BookOpen, PlusCircle, Lock, Pencil
+  Users, Landmark, BookOpen, PlusCircle, Lock, Pencil, Scale, Trash2,
 } from "lucide-react";
-import type { Employee, Partner, BankAccount, Account, BusinessEntity } from "@/lib/db/erp";
+import type { Employee, Partner, BankAccount, Account, BusinessEntity, UnitOfMeasurement } from "@/lib/db/erp";
 import {
   getEmployees,
   upsertEmployee,
@@ -26,12 +26,18 @@ import {
   upsertPartner,
   getBankAccounts,
   upsertBankAccount,
+  deleteBankAccount,
   getAccounts,
   upsertAccount,
 } from "@/lib/db/accounting";
-import { getBusinessEntities } from "@/lib/db/inventory";
+import { 
+  getBusinessEntities, 
+  getUnitsOfMeasurement, 
+  upsertUnitOfMeasurement, 
+  deleteUnitOfMeasurement 
+} from "@/lib/db/inventory";
 
-type MasterTab = "EMPLOYEES" | "PARTNERS" | "BANKS" | "ACCOUNTS";
+type MasterTab = "EMPLOYEES" | "PARTNERS" | "BANKS" | "ACCOUNTS" | "UNITS";
 
 export function Masters() {
   const refreshTrigger = useStore((s) => s.refreshTrigger);
@@ -46,6 +52,7 @@ export function Masters() {
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [businessEntities, setBusinessEntities] = useState<BusinessEntity[]>([]);
+  const [units, setUnits] = useState<UnitOfMeasurement[]>([]);
 
   // Employee Dialog
   const [empModalOpen, setEmpModalOpen] = useState(false);
@@ -67,6 +74,11 @@ export function Masters() {
   const [accForm, setAccForm] = useState<Partial<Account>>({});
   const [accSaving, setAccSaving] = useState(false);
 
+  // Unit of Measurement Dialog
+  const [unitModalOpen, setUnitModalOpen] = useState(false);
+  const [unitForm, setUnitForm] = useState<Partial<UnitOfMeasurement>>({});
+  const [unitSaving, setUnitSaving] = useState(false);
+
   const loadData = () => {
     setLoading(true);
     Promise.all([
@@ -75,13 +87,15 @@ export function Masters() {
       getBankAccounts(),
       getAccounts(),
       getBusinessEntities(),
+      getUnitsOfMeasurement(),
     ])
-      .then(([empList, ptrList, bnkList, accList, beList]) => {
+      .then(([empList, ptrList, bnkList, accList, beList, unitList]) => {
         setEmployees(empList);
         setPartners(ptrList);
         setBankAccounts(bnkList);
         setAccounts(accList);
         setBusinessEntities(beList);
+        setUnits(unitList);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -95,7 +109,8 @@ export function Masters() {
     if (!empForm.name?.trim()) return;
     setEmpSaving(true);
     try {
-      await upsertEmployee(empForm);
+      const existing = employees.find(x => x.id === empForm.id);
+      await upsertEmployee(empForm, existing);
       triggerRefresh();
       setEmpModalOpen(false);
     } catch (err: any) {
@@ -111,7 +126,8 @@ export function Masters() {
     if (!ptrForm.name?.trim()) return;
     setPtrSaving(true);
     try {
-      await upsertPartner(ptrForm);
+      const existing = partners.find(x => x.id === ptrForm.id);
+      await upsertPartner(ptrForm, existing);
       triggerRefresh();
       setPtrModalOpen(false);
     } catch (err: any) {
@@ -127,7 +143,8 @@ export function Masters() {
     if (!bankForm.bank_name?.trim() || !bankForm.account_no?.trim()) return;
     setBankSaving(true);
     try {
-      await upsertBankAccount(bankForm);
+      const existing = bankAccounts.find(x => x.id === bankForm.id);
+      await upsertBankAccount(bankForm, existing);
       triggerRefresh();
       setBankModalOpen(false);
     } catch (err: any) {
@@ -137,19 +154,69 @@ export function Masters() {
     }
   };
 
+  const handleDeleteBank = async (bank: BankAccount) => {
+    if (!window.confirm(`Remove bank account "${bank.bank_name} (${bank.account_no})"? This is only allowed when it has no financial history.`)) {
+      return;
+    }
+
+    try {
+      await deleteBankAccount(bank.id);
+      triggerRefresh();
+    } catch (err: any) {
+      alert(err?.message || "This bank account cannot be removed because it has financial history. Deactivate it instead.");
+    }
+  };
+
   // Account Handlers
   const handleSaveAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!accForm.name?.trim() || !accForm.account_type) return;
     setAccSaving(true);
     try {
-      await upsertAccount(accForm);
+      const existing = accounts.find(x => x.id === accForm.id);
+      await upsertAccount(accForm, existing);
       triggerRefresh();
       setAccModalOpen(false);
     } catch (err: any) {
       alert("Error: " + err.message);
     } finally {
       setAccSaving(false);
+    }
+  };
+
+  // Unit of Measurement Handlers
+  const handleSaveUnit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!unitForm.name?.trim() || !unitForm.abbreviation?.trim()) {
+      alert("Unit Name and Abbreviation are required.");
+      return;
+    }
+    const factor = Number(unitForm.conversion_factor);
+    if (isNaN(factor) || factor <= 0) {
+      alert("Conversion factor must be a positive number.");
+      return;
+    }
+
+    setUnitSaving(true);
+    try {
+      const existing = units.find(x => x.id === unitForm.id);
+      await upsertUnitOfMeasurement(unitForm, existing);
+      triggerRefresh();
+      setUnitModalOpen(false);
+    } catch (err: any) {
+      alert("Error saving unit: " + (err.message || err));
+    } finally {
+      setUnitSaving(false);
+    }
+  };
+
+  const handleDeleteUnit = async (id: string, name: string) => {
+    if (!window.confirm(`Delete unit "${name}"? Historical transactions will retain their recorded unit text.`)) return;
+    try {
+      await deleteUnitOfMeasurement(id);
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Error deleting unit: " + (err.message || err));
     }
   };
 
@@ -170,7 +237,7 @@ export function Masters() {
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Enterprise Masters Setup</h2>
           <p className="text-muted-foreground mt-1">
-            Maintain employee rosters, partners, commercial bank accounts, and Chart of Accounts.
+            Maintain employee rosters, partners, bank accounts, Chart of Accounts, and Units of Measurement.
           </p>
         </div>
       </div>
@@ -209,6 +276,14 @@ export function Masters() {
         >
           <BookOpen className="h-3.5 w-3.5 mr-1.5" /> Chart of Accounts ({accounts.length})
         </Button>
+        <Button
+          size="sm"
+          variant={activeTab === "UNITS" ? "default" : "outline"}
+          onClick={() => setActiveTab("UNITS")}
+          className="h-8 text-xs cursor-pointer font-medium"
+        >
+          <Scale className="h-3.5 w-3.5 mr-1.5" /> Units of Measurement ({units.length})
+        </Button>
       </div>
 
       {/* 1. EMPLOYEES TAB */}
@@ -221,7 +296,7 @@ export function Masters() {
             </div>
             <Button
               onClick={() => {
-                setEmpForm({ name: "", designation: "", phone: "", monthly_salary: 0, is_active: true });
+                setEmpForm({ name: "", designation: "", phone: "", monthly_salary: 0, join_date: new Date().toISOString().split("T")[0], is_active: true });
                 setEmpModalOpen(true);
               }}
               className="bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer h-8 text-xs"
@@ -236,6 +311,7 @@ export function Masters() {
                   <TableHead>Name</TableHead>
                   <TableHead>Designation</TableHead>
                   <TableHead>Phone</TableHead>
+                  <TableHead>Joining Date</TableHead>
                   <TableHead>Bank Account No</TableHead>
                   <TableHead>IFSC</TableHead>
                   <TableHead className="text-right">Monthly Salary (₹)</TableHead>
@@ -245,10 +321,11 @@ export function Masters() {
               </TableHeader>
               <TableBody>
                 {employees.map((emp) => (
-                  <TableRow key={emp.id}>
+                  <TableRow key={emp.id} className="hover:bg-muted/40">
                     <TableCell className="font-semibold text-xs">{emp.name}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{emp.designation || "Staff"}</TableCell>
                     <TableCell className="text-xs">{emp.phone || "—"}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{emp.join_date || "—"}</TableCell>
                     <TableCell className="text-xs font-mono text-muted-foreground">{emp.bank_account_no || "—"}</TableCell>
                     <TableCell className="text-xs font-mono text-muted-foreground">{emp.ifsc || "—"}</TableCell>
                     <TableCell className="text-right text-xs font-bold text-blue-400">
@@ -267,9 +344,10 @@ export function Masters() {
                           setEmpForm({ ...emp });
                           setEmpModalOpen(true);
                         }}
-                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground cursor-pointer"
+                        title="Edit employee"
                       >
-                        <Pencil className="h-3.5 w-3.5" />
+                        <Pencil className="h-3.5 w-3.5 text-blue-400" />
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -286,11 +364,11 @@ export function Masters() {
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>Partners &amp; Directors Master</CardTitle>
-              <CardDescription>Capital accounts, remuneration, and partner drawings.</CardDescription>
+              <CardDescription>Capital accounts, profit share, remuneration, and partner drawings.</CardDescription>
             </div>
             <Button
               onClick={() => {
-                setPtrForm({ name: "", phone: "", address: "", is_active: true });
+                setPtrForm({ name: "", phone: "", address: "", monthly_remun: 0, profit_share_pct: 0, is_active: true });
                 setPtrModalOpen(true);
               }}
               className="bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer h-8 text-xs"
@@ -304,6 +382,8 @@ export function Masters() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>Phone</TableHead>
+                  <TableHead className="text-right">Monthly Remun (₹)</TableHead>
+                  <TableHead className="text-right">Profit Share (%)</TableHead>
                   <TableHead>Address</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Action</TableHead>
@@ -311,9 +391,15 @@ export function Masters() {
               </TableHeader>
               <TableBody>
                 {partners.map((ptr) => (
-                  <TableRow key={ptr.id}>
+                  <TableRow key={ptr.id} className="hover:bg-muted/40">
                     <TableCell className="font-semibold text-xs">{ptr.name}</TableCell>
                     <TableCell className="text-xs">{ptr.phone || "—"}</TableCell>
+                    <TableCell className="text-right text-xs font-semibold text-purple-400">
+                      ₹{Number(ptr.monthly_remun || 0).toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-right text-xs font-mono">
+                      {ptr.profit_share_pct != null ? `${ptr.profit_share_pct}%` : "—"}
+                    </TableCell>
                     <TableCell className="text-xs text-muted-foreground">{ptr.address || "—"}</TableCell>
                     <TableCell>
                       <Badge variant="outline" className={ptr.is_active ? "border-purple-500 text-purple-400" : ""}>
@@ -328,9 +414,10 @@ export function Masters() {
                           setPtrForm({ ...ptr });
                           setPtrModalOpen(true);
                         }}
-                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground cursor-pointer"
+                        title="Edit partner"
                       >
-                        <Pencil className="h-3.5 w-3.5" />
+                        <Pencil className="h-3.5 w-3.5 text-blue-400" />
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -377,13 +464,14 @@ export function Masters() {
                   <TableHead>Branch</TableHead>
                   <TableHead>Operating Entity</TableHead>
                   <TableHead className="text-right">Opening Balance (₹)</TableHead>
+                  <TableHead className="text-right">Current Balance (₹)</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {bankAccounts.map((b) => (
-                  <TableRow key={b.id}>
+                  <TableRow key={b.id} className="hover:bg-muted/40">
                     <TableCell className="font-semibold text-xs">{b.bank_name}</TableCell>
                     <TableCell className="font-mono text-xs">{b.account_no}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{b.ifsc || "—"}</TableCell>
@@ -391,6 +479,9 @@ export function Masters() {
                     <TableCell className="text-xs">{b.business_entity_name || "All Entities"}</TableCell>
                     <TableCell className="text-right text-xs font-bold text-emerald-400">
                       ₹{Number(b.opening_balance).toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-right text-xs font-bold text-blue-400">
+                      ₹{Number(b.current_balance).toLocaleString()}
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className={b.is_active ? "border-emerald-500 text-emerald-400" : ""}>
@@ -405,9 +496,19 @@ export function Masters() {
                           setBankForm({ ...b });
                           setBankModalOpen(true);
                         }}
-                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground cursor-pointer"
+                        title="Edit bank account"
                       >
-                        <Pencil className="h-3.5 w-3.5" />
+                        <Pencil className="h-3.5 w-3.5 text-blue-400" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleDeleteBank(b)}
+                        className="h-7 w-7 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                        title="Remove bank account"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -428,7 +529,7 @@ export function Masters() {
             </div>
             <Button
               onClick={() => {
-                setAccForm({ name: "", account_type: "expense", sub_type: "opex", is_active: true });
+                setAccForm({ name: "", account_type: "expense", sub_type: "opex", is_active: true, is_system: false });
                 setAccModalOpen(true);
               }}
               className="bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer h-8 text-xs"
@@ -445,11 +546,12 @@ export function Masters() {
                   <TableHead>Sub-Type</TableHead>
                   <TableHead>System Account</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {accounts.map((acc) => (
-                  <TableRow key={acc.id}>
+                  <TableRow key={acc.id} className="hover:bg-muted/40">
                     <TableCell className="font-semibold text-xs flex items-center gap-2">
                       {acc.is_system && <Lock className="h-3 w-3 text-muted-foreground" />}
                       <span>{acc.name}</span>
@@ -483,6 +585,115 @@ export function Masters() {
                         {acc.is_active ? "ACTIVE" : "INACTIVE"}
                       </Badge>
                     </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => {
+                          setAccForm({ ...acc });
+                          setAccModalOpen(true);
+                        }}
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground cursor-pointer"
+                        title="Edit account details"
+                      >
+                        <Pencil className="h-3.5 w-3.5 text-blue-400" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 5. UNITS OF MEASUREMENT TAB */}
+      {activeTab === "UNITS" && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>Units of Measurement Master</CardTitle>
+              <CardDescription>
+                Configure standard trade units (sheets, sqft, sqm, pieces, kg, litres) and conversion factors.
+              </CardDescription>
+            </div>
+            <Button
+              onClick={() => {
+                setUnitForm({
+                  name: "",
+                  abbreviation: "",
+                  conversion_factor: 1.0,
+                  base_unit: "pieces",
+                  description: "",
+                  is_active: true,
+                });
+                setUnitModalOpen(true);
+              }}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer h-8 text-xs"
+            >
+              <PlusCircle className="h-3.5 w-3.5 mr-1.5" /> Add Unit
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="p-3 rounded-lg border border-blue-900/40 bg-blue-950/20 text-xs text-blue-300">
+              <span className="font-semibold">Financial &amp; Quantity Protection: </span>
+              Modifying conversion factors updates the master configuration for future operations and does not silently rewrite historical invoice lines or posted stock transactions.
+            </div>
+
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Unit Name</TableHead>
+                  <TableHead>Abbreviation</TableHead>
+                  <TableHead className="text-right">Conversion Factor</TableHead>
+                  <TableHead>Base Comparison Unit</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {units.map((u) => (
+                  <TableRow key={u.id} className="hover:bg-muted/40">
+                    <TableCell className="font-semibold text-xs">{u.name}</TableCell>
+                    <TableCell className="font-mono text-xs">{u.abbreviation}</TableCell>
+                    <TableCell className="text-right font-mono text-xs font-semibold text-emerald-400">
+                      {Number(u.conversion_factor).toFixed(4)}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{u.base_unit || "—"}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{u.description || "—"}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className={u.is_active ? "border-emerald-500 text-emerald-400" : ""}>
+                        {u.is_active ? "ACTIVE" : "INACTIVE"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => {
+                            setUnitForm({ ...u });
+                            setUnitModalOpen(true);
+                          }}
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground cursor-pointer"
+                          title="Edit unit configuration"
+                        >
+                          <Pencil className="h-3.5 w-3.5 text-blue-400" />
+                        </Button>
+                        {!["uom_sheets", "uom_pieces", "uom_sqft"].includes(u.id) && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleDeleteUnit(u.id, u.name)}
+                            className="h-7 w-7 text-muted-foreground hover:text-destructive cursor-pointer"
+                            title="Delete custom unit"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -493,10 +704,16 @@ export function Masters() {
 
       {/* Employee Modal */}
       <Dialog open={empModalOpen} onOpenChange={setEmpModalOpen}>
-        <DialogContent className="sm:max-w-[460px]">
+        <DialogContent className="sm:max-w-[480px]">
           <form onSubmit={handleSaveEmployee}>
             <DialogHeader>
-              <DialogTitle>{empForm.id ? "Edit Employee" : "Add Employee"}</DialogTitle>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="h-5 w-5 text-emerald-400" />
+                {empForm.id ? `Edit Employee: ${empForm.name}` : "Add Employee"}
+              </DialogTitle>
+              <DialogDescription>
+                Maintain designations, joining dates, and payroll account credentials.
+              </DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-3 text-xs">
               <div className="space-y-1">
@@ -527,14 +744,25 @@ export function Masters() {
                   />
                 </div>
               </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Monthly Fixed Salary (₹)</Label>
-                <Input
-                  type="number"
-                  value={empForm.monthly_salary || ""}
-                  onChange={(e) => setEmpForm({ ...empForm, monthly_salary: parseFloat(e.target.value) || 0 })}
-                  className="h-8 text-xs"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Salary (₹)</Label>
+                  <Input
+                    type="number"
+                    value={empForm.monthly_salary ?? ""}
+                    onChange={(e) => setEmpForm({ ...empForm, monthly_salary: parseFloat(e.target.value) || 0 })}
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Date of Joining</Label>
+                  <Input
+                    type="date"
+                    value={empForm.join_date || ""}
+                    onChange={(e) => setEmpForm({ ...empForm, join_date: e.target.value })}
+                    className="h-8 text-xs"
+                  />
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
@@ -549,7 +777,7 @@ export function Masters() {
                   <Label className="text-xs">IFSC Code</Label>
                   <Input
                     value={empForm.ifsc || ""}
-                    onChange={(e) => setEmpForm({ ...empForm, ifsc: e.target.value })}
+                    onChange={(e) => setEmpForm({ ...empForm, ifsc: e.target.value.toUpperCase() })}
                     className="h-8 text-xs font-mono uppercase"
                   />
                 </div>
@@ -569,10 +797,16 @@ export function Masters() {
 
       {/* Partner Modal */}
       <Dialog open={ptrModalOpen} onOpenChange={setPtrModalOpen}>
-        <DialogContent className="sm:max-w-[420px]">
+        <DialogContent className="sm:max-w-[460px]">
           <form onSubmit={handleSavePartner}>
             <DialogHeader>
-              <DialogTitle>{ptrForm.id ? "Edit Partner" : "Add Partner"}</DialogTitle>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="h-5 w-5 text-emerald-400" />
+                {ptrForm.id ? `Edit Partner: ${ptrForm.name}` : "Add Partner"}
+              </DialogTitle>
+              <DialogDescription>
+                Configure remuneration entitlement, drawings, and profit distribution share.
+              </DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-3 text-xs">
               <div className="space-y-1">
@@ -584,21 +818,45 @@ export function Masters() {
                   className="h-8 text-xs"
                 />
               </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Phone</Label>
-                <Input
-                  value={ptrForm.phone || ""}
-                  onChange={(e) => setPtrForm({ ...ptrForm, phone: e.target.value })}
-                  className="h-8 text-xs"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Monthly Remuneration (₹)</Label>
+                  <Input
+                    type="number"
+                    value={ptrForm.monthly_remun ?? ""}
+                    onChange={(e) => setPtrForm({ ...ptrForm, monthly_remun: parseFloat(e.target.value) || 0 })}
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Profit Share Percentage (%)</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    placeholder="e.g. 50"
+                    value={ptrForm.profit_share_pct ?? ""}
+                    onChange={(e) => setPtrForm({ ...ptrForm, profit_share_pct: parseFloat(e.target.value) || 0 })}
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
               </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Address</Label>
-                <Input
-                  value={ptrForm.address || ""}
-                  onChange={(e) => setPtrForm({ ...ptrForm, address: e.target.value })}
-                  className="h-8 text-xs"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Phone</Label>
+                  <Input
+                    value={ptrForm.phone || ""}
+                    onChange={(e) => setPtrForm({ ...ptrForm, phone: e.target.value })}
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Address</Label>
+                  <Input
+                    value={ptrForm.address || ""}
+                    onChange={(e) => setPtrForm({ ...ptrForm, address: e.target.value })}
+                    className="h-8 text-xs"
+                  />
+                </div>
               </div>
             </div>
             <DialogFooter>
@@ -618,7 +876,13 @@ export function Masters() {
         <DialogContent className="sm:max-w-[460px]">
           <form onSubmit={handleSaveBank}>
             <DialogHeader>
-              <DialogTitle>{bankForm.id ? "Edit Bank Account" : "Add Bank Account"}</DialogTitle>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="h-5 w-5 text-emerald-400" />
+                {bankForm.id ? `Edit Bank Account: ${bankForm.bank_name}` : "Add Bank Account"}
+              </DialogTitle>
+              <DialogDescription>
+                Commercial bank accounts linked to operating companies for reconciliation.
+              </DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-3 text-xs">
               <div className="space-y-1">
@@ -666,7 +930,7 @@ export function Masters() {
                   <Label className="text-xs">IFSC Code</Label>
                   <Input
                     value={bankForm.ifsc || ""}
-                    onChange={(e) => setBankForm({ ...bankForm, ifsc: e.target.value })}
+                    onChange={(e) => setBankForm({ ...bankForm, ifsc: e.target.value.toUpperCase() })}
                     className="h-8 text-xs font-mono uppercase"
                   />
                 </div>
@@ -683,7 +947,7 @@ export function Masters() {
                 <Label className="text-xs">Opening Balance (₹)</Label>
                 <Input
                   type="number"
-                  value={bankForm.opening_balance || ""}
+                  value={bankForm.opening_balance ?? ""}
                   onChange={(e) => setBankForm({ ...bankForm, opening_balance: parseFloat(e.target.value) || 0 })}
                   className="h-8 text-xs font-bold text-emerald-400"
                 />
@@ -694,7 +958,14 @@ export function Masters() {
                 Cancel
               </Button>
               <Button type="submit" disabled={bankSaving || !bankForm.bank_name?.trim() || !bankForm.account_no?.trim()} className="bg-emerald-600 hover:bg-emerald-500 text-white h-8 text-xs cursor-pointer">
-                {bankSaving ? "Saving..." : "Save Bank Account"}
+                {bankSaving ? (
+                  <span className="flex items-center gap-1.5">
+                    <IosSpinner size="sm" className="text-white" />
+                    Saving...
+                  </span>
+                ) : (
+                  bankForm.id ? "Save Changes" : "Save Bank Account"
+                )}
               </Button>
             </DialogFooter>
           </form>
@@ -703,10 +974,18 @@ export function Masters() {
 
       {/* Account Modal */}
       <Dialog open={accModalOpen} onOpenChange={setAccModalOpen}>
-        <DialogContent className="sm:max-w-[420px]">
+        <DialogContent className="sm:max-w-[440px]">
           <form onSubmit={handleSaveAccount}>
             <DialogHeader>
-              <DialogTitle>Add Ledger Account</DialogTitle>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="h-5 w-5 text-emerald-400" />
+                {accForm.id ? `Edit Account: ${accForm.name}` : "Add Ledger Account"}
+              </DialogTitle>
+              <DialogDescription>
+                {accForm.is_system 
+                  ? "Core system accounts are protected. You can customize the account label and active status."
+                  : "General ledger account classifications for double-entry bookkeeping."}
+              </DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-3 text-xs">
               <div className="space-y-1">
@@ -725,6 +1004,7 @@ export function Masters() {
                   <Select
                     value={accForm.account_type || "expense"}
                     onValueChange={(val: any) => setAccForm({ ...accForm, account_type: val })}
+                    disabled={accForm.is_system}
                   >
                     <SelectTrigger className="h-8 text-xs">
                       <SelectValue />
@@ -754,7 +1034,109 @@ export function Masters() {
                 Cancel
               </Button>
               <Button type="submit" disabled={accSaving || !accForm.name?.trim()} className="bg-emerald-600 hover:bg-emerald-500 text-white h-8 text-xs cursor-pointer">
-                {accSaving ? "Saving..." : "Save Account"}
+                {accSaving ? (
+                  <span className="flex items-center gap-1.5">
+                    <IosSpinner size="sm" className="text-white" />
+                    Saving...
+                  </span>
+                ) : (
+                  accForm.id ? "Save Changes" : "Save Account"
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Unit of Measurement Modal */}
+      <Dialog open={unitModalOpen} onOpenChange={setUnitModalOpen}>
+        <DialogContent className="sm:max-w-[460px]">
+          <form onSubmit={handleSaveUnit}>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="h-5 w-5 text-emerald-400" />
+                {unitForm.id ? `Edit Unit: ${unitForm.name}` : "Add Unit of Measurement"}
+              </DialogTitle>
+              <DialogDescription>
+                Define conversion ratios and unit abbreviations. Changes update configuration only and preserve historical transaction quantities.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 py-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Unit Name *</Label>
+                  <Input
+                    placeholder="e.g. Square Meters"
+                    value={unitForm.name || ""}
+                    onChange={(e) => setUnitForm({ ...unitForm, name: e.target.value })}
+                    required
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Abbreviation / Symbol *</Label>
+                  <Input
+                    placeholder="e.g. sqm or sqft"
+                    value={unitForm.abbreviation || ""}
+                    onChange={(e) => setUnitForm({ ...unitForm, abbreviation: e.target.value.toLowerCase() })}
+                    required
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Conversion Factor *</Label>
+                  <Input
+                    type="number"
+                    step="0.0001"
+                    placeholder="e.g. 0.0929"
+                    value={unitForm.conversion_factor ?? ""}
+                    onChange={(e) => setUnitForm({ ...unitForm, conversion_factor: parseFloat(e.target.value) || 0 })}
+                    required
+                    min="0.000001"
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Base Unit</Label>
+                  <Input
+                    placeholder="e.g. sqft or pieces"
+                    value={unitForm.base_unit || ""}
+                    onChange={(e) => setUnitForm({ ...unitForm, base_unit: e.target.value })}
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs">Description / Usage</Label>
+                <Input
+                  placeholder="e.g. Standard billing unit for export veneer"
+                  value={unitForm.description || ""}
+                  onChange={(e) => setUnitForm({ ...unitForm, description: e.target.value })}
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setUnitModalOpen(false)} className="h-8 text-xs">
+                Cancel
+              </Button>
+              <Button 
+                type="submit" 
+                disabled={unitSaving || !unitForm.name?.trim() || !unitForm.abbreviation?.trim()}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white h-8 text-xs cursor-pointer"
+              >
+                {unitSaving ? (
+                  <span className="flex items-center gap-1.5">
+                    <IosSpinner size="sm" className="text-white" />
+                    Saving...
+                  </span>
+                ) : (
+                  unitForm.id ? "Save Changes" : "Create Unit"
+                )}
               </Button>
             </DialogFooter>
           </form>
