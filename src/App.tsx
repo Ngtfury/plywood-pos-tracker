@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/layout/Layout";
 import { Dashboard } from "./pages/dashboard/Dashboard";
 import { Transactions } from "./pages/transactions/Transactions";
@@ -58,8 +58,8 @@ function ERPApplication() {
 
   // 3. Schema Integrity Gate (Verified on startup right after master password unlock)
   return (
-    <SchemaIntegrityGate>
-      <BrowserRouter>
+    <SchemaIntegrityGate onResetDatabase={() => setConfigured(false)}>
+      <HashRouter>
         <Routes>
           <Route path="/" element={<Layout />}>
             {/* ── Existing Routes (PRESERVED) ── */}
@@ -87,8 +87,10 @@ function ERPApplication() {
             <Route path="reports" element={<Reports />} />
             <Route path="masters" element={<Masters />} />
           </Route>
+          {/* Wildcard fallback ensures unhandled paths / index.html cleanly redirect to root */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-      </BrowserRouter>
+      </HashRouter>
     </SchemaIntegrityGate>
   );
 }

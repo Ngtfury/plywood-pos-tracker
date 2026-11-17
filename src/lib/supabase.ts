@@ -11,9 +11,16 @@ export function getStoredCredentials(): { url: string; key: string } {
 }
 
 export function isSupabaseConfigured(): boolean {
-  const configured = localStorage.getItem(STORAGE_CONFIGURED_KEY) === 'true';
-  const { url, key } = getStoredCredentials();
-  return Boolean(configured && url && key);
+  try {
+    const configured = localStorage.getItem(STORAGE_CONFIGURED_KEY) === 'true';
+    const { url, key } = getStoredCredentials();
+    if (!configured || !url || !key) return false;
+    if (!url.startsWith('https://') || !url.includes('.supabase.co')) return false;
+    new URL(url);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function saveStoredCredentials(url: string, key: string) {
@@ -49,14 +56,21 @@ export function getSupabase(): SupabaseClient {
 
   // If credentials changed or instance doesn't match active credentials, recreate client
   if (!supabaseInstance || currentClientUrl !== url || currentClientKey !== key) {
-    if (!url || !key) {
+    if (!url || !key || !url.startsWith('https://')) {
       supabaseInstance = createClient('https://placeholder.supabase.co', 'placeholder');
       currentClientUrl = '';
       currentClientKey = '';
     } else {
-      supabaseInstance = createClient(url, key);
-      currentClientUrl = url;
-      currentClientKey = key;
+      try {
+        supabaseInstance = createClient(url, key);
+        currentClientUrl = url;
+        currentClientKey = key;
+      } catch (err) {
+        console.error("[Supabase] Failed to initialize client with stored URL:", err);
+        supabaseInstance = createClient('https://placeholder.supabase.co', 'placeholder');
+        currentClientUrl = '';
+        currentClientKey = '';
+      }
     }
   }
   return supabaseInstance;
@@ -70,10 +84,17 @@ export function resetSupabaseClient(url?: string, key?: string): SupabaseClient 
   const effectiveUrl = (url || creds.url || '').trim();
   const effectiveKey = (key || creds.key || '').trim();
 
-  if (effectiveUrl && effectiveKey) {
-    supabaseInstance = createClient(effectiveUrl, effectiveKey);
-    currentClientUrl = effectiveUrl;
-    currentClientKey = effectiveKey;
+  if (effectiveUrl && effectiveKey && effectiveUrl.startsWith('https://')) {
+    try {
+      supabaseInstance = createClient(effectiveUrl, effectiveKey);
+      currentClientUrl = effectiveUrl;
+      currentClientKey = effectiveKey;
+    } catch (err) {
+      console.error("[Supabase] Failed to reset client with URL:", err);
+      supabaseInstance = createClient('https://placeholder.supabase.co', 'placeholder');
+      currentClientUrl = '';
+      currentClientKey = '';
+    }
   } else {
     supabaseInstance = createClient('https://placeholder.supabase.co', 'placeholder');
     currentClientUrl = '';

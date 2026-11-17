@@ -16,18 +16,20 @@ import {
   ChevronDown,
   ChevronUp,
   ShieldAlert,
+  LogOut,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { IosSpinner } from "@/components/ui/IosSpinner";
-import { getStoredCredentials } from "@/lib/supabase";
+import { getStoredCredentials, disconnectSupabase } from "@/lib/supabase";
 import { checkSchemaHealth, applyMasterSchema, SchemaHealthResult } from "@/lib/db/schemaSync";
 import { MASTER_SCHEMA_SQL } from "@/lib/db/masterSchemaSql";
 
 interface SchemaIntegrityGateProps {
   children: React.ReactNode;
+  onResetDatabase?: () => void;
 }
 
-export function SchemaIntegrityGate({ children }: SchemaIntegrityGateProps) {
+export function SchemaIntegrityGate({ children, onResetDatabase }: SchemaIntegrityGateProps) {
   const [checking, setChecking] = useState(true);
   const [autoMigrating, setAutoMigrating] = useState(false);
   const [health, setHealth] = useState<SchemaHealthResult | null>(null);
@@ -69,6 +71,17 @@ export function SchemaIntegrityGate({ children }: SchemaIntegrityGateProps) {
 
       if (result.isFit) {
         setChecking(false);
+        return;
+      }
+
+      // If network or database connection failed, do not attempt auto-migrate
+      if (result.connectionError) {
+        setChecking(false);
+        setAutoMigrating(false);
+        setFeedback({
+          type: "error",
+          text: result.summary,
+        });
         return;
       }
 
@@ -160,6 +173,20 @@ export function SchemaIntegrityGate({ children }: SchemaIntegrityGateProps) {
     setTimeout(() => setCopied(false), 3000);
   };
 
+  const handleResetDatabase = () => {
+    const confirmed = window.confirm(
+      "Do you want to disconnect from this database and run onboarding again to configure another database?"
+    );
+    if (!confirmed) return;
+
+    disconnectSupabase();
+    if (onResetDatabase) {
+      onResetDatabase();
+    } else {
+      window.location.reload();
+    }
+  };
+
   // 1. Loading state during probe or background auto-migration
   if (checking || autoMigrating) {
     return (
@@ -181,7 +208,16 @@ export function SchemaIntegrityGate({ children }: SchemaIntegrityGateProps) {
             ? "Applying master schema and verifying enterprise accounting invariants."
             : "Checking all 24 ERP tables, atomic functions, and double-entry ledgers."}
         </p>
-        <IosSpinner size="md" className="text-emerald-500" />
+        <IosSpinner size="md" className="text-emerald-500 mb-6" />
+
+        <button
+          type="button"
+          onClick={handleResetDatabase}
+          className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1.5 cursor-pointer underline underline-offset-4"
+        >
+          <LogOut className="w-3.5 h-3.5 text-zinc-400" />
+          <span>Need to switch database? Run onboarding again</span>
+        </button>
       </div>
     );
   }
@@ -299,6 +335,30 @@ export function SchemaIntegrityGate({ children }: SchemaIntegrityGateProps) {
                 </Button>
               </div>
             </div>
+
+            {/* Action 3: Switch Database / Run Onboarding */}
+            <div className="p-4 rounded-2xl bg-zinc-950/50 border border-zinc-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-zinc-200">Switch Supabase Database</p>
+                <p className="text-[11px] text-zinc-400">
+                  Connected to wrong database or want to use a different project? Run onboarding again.
+                </p>
+                {url && (
+                  <p className="text-[10px] text-zinc-500 font-mono mt-1 truncate max-w-xs">
+                    Current: {url}
+                  </p>
+                )}
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleResetDatabase}
+                className="text-xs border-zinc-700 hover:bg-zinc-800 text-rose-300 hover:text-rose-200 cursor-pointer h-9 rounded-xl shrink-0"
+              >
+                <LogOut className="w-3.5 h-3.5 mr-1.5 text-rose-400" />
+                Run Onboarding Again
+              </Button>
+            </div>
           </div>
 
           {/* Collapsible Missing Items Details */}
@@ -336,12 +396,12 @@ export function SchemaIntegrityGate({ children }: SchemaIntegrityGateProps) {
             )}
           </div>
 
-          {/* Verification & Continue Button */}
-          <div className="pt-2">
+          {/* Action Buttons */}
+          <div className="pt-2 flex flex-col sm:flex-row gap-2.5">
             <Button
               onClick={handleRecheck}
               disabled={checking}
-              className="w-full h-11 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-950 transition-all cursor-pointer flex items-center justify-center gap-2"
+              className="flex-1 h-11 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-950 transition-all cursor-pointer flex items-center justify-center gap-2"
             >
               {checking ? (
                 <>
@@ -354,6 +414,17 @@ export function SchemaIntegrityGate({ children }: SchemaIntegrityGateProps) {
                   <span>Verify Schema &amp; Continue</span>
                 </>
               )}
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleResetDatabase}
+              className="h-11 border-zinc-700 hover:bg-zinc-800 text-zinc-300 hover:text-white font-medium rounded-xl cursor-pointer flex items-center justify-center gap-2 px-4 shrink-0"
+              title="Disconnect this database and configure another one"
+            >
+              <LogOut className="w-4 h-4 text-rose-400" />
+              <span>Run Onboarding</span>
             </Button>
           </div>
         </div>

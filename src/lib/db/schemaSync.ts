@@ -11,6 +11,7 @@ export interface SchemaHealthResult {
   missingTables: string[];
   missingColumns: string[];
   missingFunctions: string[];
+  connectionError?: string;
   summary: string;
   checkedAt: string;
 }
@@ -51,6 +52,38 @@ export async function checkSchemaHealth(): Promise<SchemaHealthResult> {
   const missingTables: string[] = [];
   const missingColumns: string[] = [];
   const missingFunctions: string[] = [];
+
+  // 0. Verify basic network and database connectivity
+  try {
+    const { error: pingError } = await supabase.from('categories').select('id', { head: true }).limit(1);
+    if (pingError) {
+      // 42P01: relation does not exist (valid connection, just empty/missing schema)
+      // PGRST205: relation does not exist in schema cache
+      if (pingError.code !== '42P01' && pingError.code !== 'PGRST205') {
+        const connErr = pingError.message || `Supabase error (${pingError.code || 'unknown'})`;
+        return {
+          isFit: false,
+          missingTables: [...ALL_REQUIRED_TABLES],
+          missingColumns: [],
+          missingFunctions: [],
+          connectionError: connErr,
+          summary: `Database connection failed: ${connErr}`,
+          checkedAt: new Date().toISOString(),
+        };
+      }
+    }
+  } catch (err: any) {
+    const connErr = err?.message || 'Network connection failed';
+    return {
+      isFit: false,
+      missingTables: [...ALL_REQUIRED_TABLES],
+      missingColumns: [],
+      missingFunctions: [],
+      connectionError: connErr,
+      summary: `Database connection failed: ${connErr}`,
+      checkedAt: new Date().toISOString(),
+    };
+  }
 
   // 1. Verify all 24 required tables
   const tableChecks = await Promise.allSettled(
