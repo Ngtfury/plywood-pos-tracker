@@ -4,6 +4,8 @@
 // ============================================================
 import { getSupabase } from '../supabase';
 import { recordAuditLog } from './audit';
+import { getBusinessEntities } from './inventory';
+export { getBusinessEntities };
 import type {
   Account, Voucher, VoucherLine, JournalEntry,
   SalaryRecord, Employee, Partner, BankAccount,
@@ -206,15 +208,18 @@ export async function getJournalEntries(params: {
   businessEntityId?: string;
   fromDate?: string;
   toDate?: string;
+  status?: string;
   limit?: number;
 }): Promise<JournalEntry[]> {
   const supabase = getSupabase();
   let q = supabase
     .from('journal_entries')
     .select(`*, business_entities(name), journal_lines(*, accounts(name, account_type))`)
-    .eq('status', 'posted')
     .order('entry_date', { ascending: false });
 
+  if (params.status && params.status !== 'all') {
+    q = q.eq('status', params.status);
+  }
   if (params.businessEntityId) q = q.eq('business_entity_id', params.businessEntityId);
   if (params.fromDate) q = q.gte('entry_date', params.fromDate);
   if (params.toDate) q = q.lte('entry_date', params.toDate);
@@ -259,6 +264,35 @@ export async function insertJournalEntry(params: {
   });
   if (error) { console.error('Atomic journal posting failed:', error); throw error; }
   return data as string;
+}
+
+export async function updateJournalEntry(params: {
+  id: string;
+  entry_date: string;
+  reference?: string | null;
+  narration: string;
+  lines: { account_id: string; debit_amount: number; credit_amount: number; narration?: string }[];
+}): Promise<void> {
+  const supabase = getSupabase();
+
+  const totalDebit = params.lines.reduce((s, l) => s + (l.debit_amount || 0), 0);
+  const totalCredit = params.lines.reduce((s, l) => s + (l.credit_amount || 0), 0);
+
+  if (Math.abs(totalDebit - totalCredit) > 0.001) {
+    throw new Error(`Journal entry is unbalanced. Debit: ${totalDebit}, Credit: ${totalCredit}`);
+  }
+
+  const { error } = await supabase.rpc('update_journal_entry', {
+    p_journal_id: params.id,
+    p_entry_date: params.entry_date,
+    p_reference: params.reference || null,
+    p_narration: params.narration,
+    p_lines: params.lines,
+  });
+  if (error) {
+    console.error('Update journal entry failed:', error);
+    throw error;
+  }
 }
 
 export async function cancelJournalEntry(id: string): Promise<void> {
@@ -483,6 +517,48 @@ export async function paySalary(params: {
     p_cash_account: params.cash_account_id,
   });
   if (error) throw error;
+}
+
+export async function updateSalaryBooking(params: {
+  id: string;
+  voucher_date: string;
+  salary_month: string;
+  salary_frequency: 'monthly' | 'weekly';
+  payee_type: 'employee' | 'partner';
+  employee_id?: string | null;
+  partner_id?: string | null;
+  payee_name: string;
+  booked_amount: number;
+  narration?: string | null;
+}): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.rpc('update_salary_booking', {
+    p_record_id: params.id,
+    p_voucher_date: params.voucher_date,
+    p_salary_month: params.salary_month,
+    p_salary_frequency: params.salary_frequency,
+    p_payee_type: params.payee_type,
+    p_employee_id: params.employee_id || null,
+    p_partner_id: params.partner_id || null,
+    p_payee_name: params.payee_name,
+    p_booked_amount: params.booked_amount,
+    p_narration: params.narration || null,
+  });
+  if (error) {
+    console.error('Update salary booking failed:', error);
+    throw error;
+  }
+}
+
+export async function cancelSalaryBooking(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.rpc('cancel_salary_booking', {
+    p_record_id: id,
+  });
+  if (error) {
+    console.error('Cancel salary booking failed:', error);
+    throw error;
+  }
 }
 
 // ---- P&L Summary from vouchers ----

@@ -47,6 +47,7 @@ export interface Transaction {
   notes: string | null;
   reference: string | null;
   custom_data?: Record<string, any>;
+  business_entity_id?: string | null;
   category_name?: string;
   category_color?: string;
   entity_name?: string;
@@ -317,7 +318,8 @@ export async function addTransaction(data: Omit<Transaction, "id" | "reference">
     description: data.description || null,
     notes: data.notes || null,
     reference: data.custom_data?.payment_reference || null,
-    custom_data: data.custom_data || {}
+    custom_data: data.custom_data || {},
+    business_entity_id: data.business_entity_id || data.custom_data?.business_entity_id || null
   };
 
   const { error } = await supabase.rpc('post_quick_transaction_atomic', {
@@ -962,4 +964,137 @@ export async function getCreditDashboardStats() {
     activeSuppliersCount,
     totalPendingAccounts: activeCustomersCount + activeSuppliersCount
   };
+}
+
+// =========================================================================
+// COMPANY-WISE CURRENT CASH BALANCE MANAGEMENT
+// =========================================================================
+
+/**
+ * Retrieves the persisted opening cash balance for a company (or all companies).
+ */
+export async function getCompanyOpeningBalance(companyId?: string | null): Promise<number> {
+  const supabase = getSupabase();
+  const settingKey = companyId && companyId !== 'ALL'
+    ? `opening_cash_balance_${companyId}`
+    : 'opening_cash_balance';
+
+  try {
+    const { data, error } = await supabase
+      .from('erp_settings')
+      .select('value')
+      .eq('key', settingKey)
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data) {
+      if (companyId && companyId !== 'ALL') {
+        // Fallback to global opening balance if entity-specific has not been customized yet
+        const { data: globalData } = await supabase
+          .from('erp_settings')
+          .select('value')
+          .eq('key', 'opening_cash_balance')
+          .limit(1)
+          .maybeSingle();
+        return globalData?.value ? parseFloat(globalData.value) || 0 : 0;
+      }
+      return 0;
+    }
+
+    return parseFloat(data.value) || 0;
+  } catch (err) {
+    console.warn('Failed to fetch opening cash balance from erp_settings:', err);
+    return 0;
+  }
+}
+
+/**
+ * Persists the opening cash balance for a company in erp_settings.
+ */
+export async function setCompanyOpeningBalance(amount: number, companyId?: string | null): Promise<void> {
+  const supabase = getSupabase();
+  const settingKey = companyId && companyId !== 'ALL'
+    ? `opening_cash_balance_${companyId}`
+    : 'opening_cash_balance';
+
+  const { error } = await supabase
+    .from('erp_settings')
+    .upsert({
+      key: settingKey,
+      value: amount.toString(),
+      updated_at: new Date().toISOString()
+    });
+
+  if (error) {
+    console.error('Failed to save opening cash balance:', error);
+    throw error;
+  }
+}
+
+/**
+ * Pure calculation function to determine the company's live current balance.
+ * Uses exact immediate cashflow (got cash / paid cash) for every transaction,
+ * ensuring partial upfront payments and credit settlements are accurately reflected.
+ */
+export function calculateCompanyCurrentBalance(
+  transactions: Transaction[],
+  openingBalance: number,
+  companyId?: string | null
+): { currentBalance: number; totalCashIn: number; totalCashOut: number } {
+  let totalCashIn = 0;
+  let totalCashOut = 0;
+
+  for (const t of transactions) {
+    // If companyId filter is active, check if transaction matches
+    if (companyId && companyId !== 'ALL') {
+      const txnBizId = t.business_entity_id || t.custom_data?.business_entity_id;
+      // If transaction has a specified entity that does not match, skip
+      if (txnBizId && txnBizId !== companyId) {
+        continue;
+      }
+    }
+
+    // Immediate cashflow moved: for partial payments, this is exactly the upfront got cash (paid_amount)
+    const cashMoved = Number(t.paid_amount != null ? t.paid_amount : t.amount) || 0;
+
+    if (t.type === 'IN') {
+      totalCashIn += cashMoved;
+    } else {
+      totalCashOut += cashMoved;
+    }
+  }
+
+  const currentBalance = Math.round((openingBalance + totalCashIn - totalCashOut) * 100) / 100;
+  return {
+    currentBalance,
+    totalCashIn: Math.round(totalCashIn * 100) / 100,
+    totalCashOut: Math.round(totalCashOut * 100) / 100
+  };
+}
+
+/**
+ * Directly sets the desired current balance for a company by adjusting its opening balance baseline.
+ */
+export async function setCompanyDesiredCurrentBalance(
+  targetBalance: number,
+  transactions: Transaction[],
+  companyId?: string | null
+): Promise<number> {
+  const { totalCashIn, totalCashOut } = calculateCompanyCurrentBalance(transactions, 0, companyId);
+  const newOpening = Math.round((targetBalance - (totalCashIn - totalCashOut)) * 100) / 100;
+  await setCompanyOpeningBalance(newOpening, companyId);
+  return newOpening;
+}
+
+/**
+ * Adds funds/capital directly to the company's balance.
+ */
+export async function addFundsToCompanyBalance(
+  amountToAdd: number,
+  companyId?: string | null
+): Promise<number> {
+  const currentOpening = await getCompanyOpeningBalance(companyId);
+  const newOpening = Math.round((currentOpening + amountToAdd) * 100) / 100;
+  await setCompanyOpeningBalance(newOpening, companyId);
+  return newOpening;
 }

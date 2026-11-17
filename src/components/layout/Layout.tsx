@@ -1,6 +1,7 @@
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { QuickEntryModal } from "../QuickEntryModal";
+import { CurrentBalanceModal } from "../CurrentBalanceModal";
 import { useStore } from "@/store";
 import { AnimatePresence, motion } from "framer-motion";
 import { OfflineIndicator } from "@/licensing";
@@ -8,8 +9,10 @@ import { OfflineIndicator } from "@/licensing";
 export function Layout() {
   const isQuickIncomeOpen = useStore(s => s.isQuickIncomeOpen);
   const isQuickExpenseOpen = useStore(s => s.isQuickExpenseOpen);
+  const isBalanceModalOpen = useStore(s => s.isBalanceModalOpen);
   const setQuickIncomeOpen = useStore(s => s.setQuickIncomeOpen);
   const setQuickExpenseOpen = useStore(s => s.setQuickExpenseOpen);
+  const setBalanceModalOpen = useStore(s => s.setBalanceModalOpen);
   const location = useLocation();
 
   return (
@@ -43,6 +46,11 @@ export function Layout() {
         type="OUT" 
         isOpen={isQuickExpenseOpen} 
         onClose={() => setQuickExpenseOpen(false)} 
+      />
+
+      <CurrentBalanceModal
+        isOpen={isBalanceModalOpen}
+        onClose={() => setBalanceModalOpen(false)}
       />
     </div>
   );

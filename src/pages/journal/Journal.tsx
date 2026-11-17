@@ -17,12 +17,13 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  BookOpen, PlusCircle, Trash2, CheckCircle2, AlertCircle, Ban, ChevronDown, ChevronRight
+  BookOpen, PlusCircle, Trash2, CheckCircle2, AlertCircle, Ban, ChevronDown, ChevronRight, Pencil
 } from "lucide-react";
 import type { JournalEntry, Account } from "@/lib/db/erp";
 import {
   getJournalEntries,
   insertJournalEntry,
+  updateJournalEntry,
   cancelJournalEntry,
   getAccounts,
 } from "@/lib/db/accounting";
@@ -68,6 +69,7 @@ export function Journal() {
   // Modal State
   const [dialogOpen, setDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editingJournal, setEditingJournal] = useState<JournalEntry | null>(null);
   const [entryDate, setEntryDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [reference, setReference] = useState("");
   const [narration, setNarration] = useState("");
@@ -98,10 +100,32 @@ export function Journal() {
       alert("Please select an Operating Business Entity from the top header.");
       return;
     }
+    setEditingJournal(null);
     setEntryDate(new Date().toISOString().split("T")[0]);
     setReference("");
     setNarration("");
     setLines([emptyDebitLine(), emptyCreditLine()]);
+    setDialogOpen(true);
+  };
+
+  const openEditJournal = (j: JournalEntry) => {
+    setEditingJournal(j);
+    setEntryDate(j.entry_date ? j.entry_date.split("T")[0] : new Date().toISOString().split("T")[0]);
+    setReference(j.reference || "");
+    setNarration(j.narration || "");
+    if (j.lines && j.lines.length > 0) {
+      setLines(
+        j.lines.map((l, idx) => ({
+          id: l.id || `jl_${Date.now()}_${idx}`,
+          account_id: l.account_id,
+          debit_amount: Number(l.debit_amount) || 0,
+          credit_amount: Number(l.credit_amount) || 0,
+          narration: l.narration || "",
+        }))
+      );
+    } else {
+      setLines([emptyDebitLine(), emptyCreditLine()]);
+    }
     setDialogOpen(true);
   };
 
@@ -143,7 +167,7 @@ export function Journal() {
 
   const handleSaveJournal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedEntityId) return;
+    if (!selectedEntityId && !editingJournal) return;
     if (!isBalanced) {
       alert(`Journal entry is not balanced! Total Debit (₹${totalDebit}) must equal Total Credit (₹${totalCredit}).`);
       return;
@@ -159,23 +183,37 @@ export function Journal() {
 
     setSaving(true);
     try {
-      await insertJournalEntry({
-        business_entity_id: selectedEntityId,
-        entry_date: entryDate + "T12:00:00Z",
-        reference: reference.trim() || null,
-        narration: narration.trim(),
-        lines: lines.map((l) => ({
-          account_id: l.account_id,
-          debit_amount: Number(l.debit_amount) || 0,
-          credit_amount: Number(l.credit_amount) || 0,
-          narration: l.narration.trim() || undefined,
-        })),
-      });
+      const payloadLines = lines.map((l) => ({
+        account_id: l.account_id,
+        debit_amount: Number(l.debit_amount) || 0,
+        credit_amount: Number(l.credit_amount) || 0,
+        narration: l.narration.trim() || undefined,
+      }));
+
+      if (editingJournal) {
+        await updateJournalEntry({
+          id: editingJournal.id,
+          entry_date: entryDate + "T12:00:00Z",
+          reference: reference.trim() || null,
+          narration: narration.trim(),
+          lines: payloadLines,
+        });
+      } else {
+        await insertJournalEntry({
+          business_entity_id: selectedEntityId!,
+          entry_date: entryDate + "T12:00:00Z",
+          reference: reference.trim() || null,
+          narration: narration.trim(),
+          lines: payloadLines,
+        });
+      }
 
       triggerRefresh();
       setDialogOpen(false);
+      setEditingJournal(null);
+      await loadData();
     } catch (err: any) {
-      alert("Failed to post journal entry: " + (err.message || err));
+      alert("Failed to save journal entry: " + (err.message || err));
     } finally {
       setSaving(false);
     }
@@ -184,10 +222,16 @@ export function Journal() {
   const handleCancel = async (j: JournalEntry) => {
     if (!window.confirm("Are you sure you want to cancel this journal entry?")) return;
     try {
+      // Optimistically mark entry as cancelled so user instantly sees state change
+      setEntries((prev) =>
+        prev.map((e) => (e.id === j.id ? { ...e, status: "cancelled" } : e))
+      );
       await cancelJournalEntry(j.id);
       triggerRefresh();
+      await loadData();
     } catch (err: any) {
-      alert("Error: " + err.message);
+      alert("Error cancelling journal entry: " + (err.message || err));
+      loadData();
     }
   };
 
@@ -329,15 +373,29 @@ export function Journal() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                          {j.status === "posted" && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleCancel(j)}
-                              className="h-7 text-xs text-muted-foreground hover:text-rose-400"
-                            >
-                              <Ban className="h-3.5 w-3.5 mr-1" /> Cancel
-                            </Button>
+                          {j.status === "posted" ? (
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => openEditJournal(j)}
+                                className="h-7 text-xs text-muted-foreground hover:text-primary"
+                                title="Edit Journal Entry"
+                              >
+                                <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleCancel(j)}
+                                className="h-7 text-xs text-muted-foreground hover:text-rose-400"
+                                title="Cancel Journal Entry"
+                              >
+                                <Ban className="h-3.5 w-3.5 mr-1" /> Cancel
+                              </Button>
+                            </div>
+                          ) : (
+                            <span className="text-[11px] text-muted-foreground italic">Cancelled</span>
                           )}
                         </TableCell>
                       </TableRow>
@@ -389,12 +447,20 @@ export function Journal() {
         </CardContent>
       </Card>
 
-      {/* New Journal Entry Modal */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      {/* Journal Entry Modal (New & Edit) */}
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(open) => {
+          setDialogOpen(open);
+          if (!open) setEditingJournal(null);
+        }}
+      >
         <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
           <form onSubmit={handleSaveJournal}>
             <DialogHeader>
-              <DialogTitle>Post General Journal Entry</DialogTitle>
+              <DialogTitle>
+                {editingJournal ? "Edit General Journal Entry" : "Post General Journal Entry"}
+              </DialogTitle>
             </DialogHeader>
 
             <div className="space-y-4 py-3 text-xs">
@@ -544,7 +610,15 @@ export function Journal() {
             </div>
 
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)} className="h-8 text-xs">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setDialogOpen(false);
+                  setEditingJournal(null);
+                }}
+                className="h-8 text-xs"
+              >
                 Cancel
               </Button>
               <Button
@@ -552,7 +626,9 @@ export function Journal() {
                 disabled={saving || !isBalanced || !narration.trim()}
                 className="bg-emerald-600 hover:bg-emerald-500 text-white h-8 text-xs cursor-pointer"
               >
-                {saving ? "Posting..." : "Confirm & Post Journal"}
+                {saving
+                  ? (editingJournal ? "Updating..." : "Posting...")
+                  : (editingJournal ? "Save Changes" : "Confirm & Post Journal")}
               </Button>
             </DialogFooter>
           </form>

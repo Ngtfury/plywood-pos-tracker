@@ -1,10 +1,16 @@
 import { useState, useEffect } from "react";
-import { getTransactions, deleteTransactions, Transaction } from "@/lib/db/queries";
+import {
+  getTransactions,
+  deleteTransactions,
+  Transaction,
+  getCompanyOpeningBalance,
+  calculateCompanyCurrentBalance,
+} from "@/lib/db/queries";
 import { getBankAccounts } from "@/lib/db/accounting";
 import type { BankAccount } from "@/lib/db/erp";
 import { useStore } from "@/store";
 import { Button } from "@/components/ui/button";
-import { Pencil, Trash2 } from "lucide-react";
+import { Pencil, Trash2, Wallet } from "lucide-react";
 import { 
   Table, 
   TableBody, 
@@ -24,22 +30,31 @@ export function Transactions() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [currentBal, setCurrentBal] = useState<number>(0);
   
   const refreshTrigger = useStore(s => s.refreshTrigger);
   const triggerRefresh = useStore(s => s.triggerRefresh);
   const setQuickExpenseOpen = useStore(s => s.setQuickExpenseOpen);
+  const setBalanceModalOpen = useStore(s => s.setBalanceModalOpen);
+  const selectedEntityId = useStore(s => s.selectedBusinessEntityId);
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([getTransactions(), getBankAccounts()])
-      .then(([transactionList, bankAccountList]) => {
+    Promise.all([
+      getTransactions(),
+      getBankAccounts(),
+      getCompanyOpeningBalance(selectedEntityId),
+    ])
+      .then(([transactionList, bankAccountList, opBal]) => {
         setTransactions(transactionList);
         setBankAccounts(bankAccountList);
+        const bal = calculateCompanyCurrentBalance(transactionList, opBal, selectedEntityId);
+        setCurrentBal(bal.currentBalance);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
     setSelectedIds(new Set());
-  }, [refreshTrigger]);
+  }, [refreshTrigger, selectedEntityId]);
 
   const toggleSelect = (id: string) => {
     const newSelected = new Set(selectedIds);
@@ -66,14 +81,31 @@ export function Transactions() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Transactions</h2>
           <p className="text-muted-foreground">
             Manage your incoming and outgoing transactions.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            onClick={() => setBalanceModalOpen(true)}
+            variant="outline"
+            className="h-9 px-3 gap-2 border-primary/30 hover:border-primary bg-primary/5 hover:bg-primary/10 cursor-pointer text-xs font-semibold"
+            title="Click to view, set or add to company current balance"
+          >
+            <Wallet className="h-4 w-4 text-primary" />
+            <span className="text-muted-foreground">Balance:</span>
+            <span
+              className={`font-mono font-bold ${
+                currentBal >= 0 ? "text-emerald-500" : "text-rose-500"
+              }`}
+            >
+              ₹{currentBal.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+            </span>
+          </Button>
+
           {selectedIds.size > 0 && (
             <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
               {isDeleting ? (
@@ -91,7 +123,7 @@ export function Transactions() {
           )}
           <button 
             onClick={() => setQuickExpenseOpen(true)}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 cursor-pointer"
           >
             Add Transaction
           </button>

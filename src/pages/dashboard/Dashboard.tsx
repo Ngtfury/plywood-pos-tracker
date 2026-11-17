@@ -18,9 +18,14 @@ import {
   Scale,
   ShieldCheck,
   Building2,
+  Wallet,
 } from "lucide-react";
 import { BusinessEntitySelector } from "@/components/erp/BusinessEntitySelector";
-import { getPnlSummary, getVouchers } from "@/lib/db/accounting";
+import { getPnlSummary, getVouchers, getBusinessEntities } from "@/lib/db/accounting";
+import {
+  getCompanyOpeningBalance,
+  calculateCompanyCurrentBalance,
+} from "@/lib/db/queries";
 
 interface ChartData {
   date: string;
@@ -42,6 +47,10 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true);
   const refreshTrigger = useStore(s => s.refreshTrigger);
   const selectedEntityId = useStore(s => s.selectedBusinessEntityId);
+  const setBalanceModalOpen = useStore(s => s.setBalanceModalOpen);
+
+  const [companyCurrentBalance, setCompanyCurrentBalance] = useState<number>(0);
+  const [entityName, setEntityName] = useState<string>("All Companies");
 
   // Accounting P&L and Balance Sheet Metrics
   const [pnlData, setPnlData] = useState<{
@@ -93,15 +102,26 @@ export function Dashboard() {
         paymentStatus: "unpaid",
         businessEntityId: selectedEntityId || undefined,
       }),
+      getCompanyOpeningBalance(selectedEntityId),
+      getBusinessEntities(),
     ])
-      .then(([txns, pnl, unpaidPur, unpaidSal]) => {
+      .then(([txns, pnl, unpaidPur, unpaidSal, opBal, entList]) => {
         setAllTransactions(txns);
         setPnlData(pnl);
 
-        const payables = unpaidPur.reduce((s, v) => s + (Number(v.balance_due) || 0), 0);
-        const receivables = unpaidSal.reduce((s, v) => s + (Number(v.balance_due) || 0), 0);
+        const payables = unpaidPur.reduce((s: number, v: any) => s + (Number(v.balance_due) || 0), 0);
+        const receivables = unpaidSal.reduce((s: number, v: any) => s + (Number(v.balance_due) || 0), 0);
         setOutstandingPayable(payables);
         setOutstandingReceivable(receivables);
+
+        const currentBal = calculateCompanyCurrentBalance(txns, opBal, selectedEntityId);
+        setCompanyCurrentBalance(currentBal.currentBalance);
+        if (selectedEntityId) {
+          const found = entList.find((e: any) => e.id === selectedEntityId);
+          setEntityName(found ? found.name : "Company Balance");
+        } else {
+          setEntityName("Total Consolidated");
+        }
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -318,7 +338,7 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
-      {/* Dashboard Heading, Operating Entity Selector & Dynamic Month Filter Buttons */}
+      {/* Dashboard Heading, Operating Entity Selector, Current Balance Trigger & Dynamic Month Filter Buttons */}
       <div className="space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
@@ -327,8 +347,26 @@ export function Dashboard() {
               Overview of your financial position, liquid cash flow, and GAAP double-entry metrics.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <BusinessEntitySelector />
+            <Button
+              onClick={() => setBalanceModalOpen(true)}
+              variant="outline"
+              className="h-9 px-3 gap-2 border-primary/30 hover:border-primary bg-primary/5 hover:bg-primary/10 cursor-pointer text-xs font-semibold"
+              title="Click to view, adjust or add company balance"
+            >
+              <Wallet className="h-4 w-4 text-primary" />
+              <div className="flex items-center gap-1.5">
+                <span className="text-muted-foreground hidden sm:inline">{entityName}:</span>
+                <span
+                  className={`font-mono font-bold ${
+                    companyCurrentBalance >= 0 ? "text-emerald-400" : "text-rose-400"
+                  }`}
+                >
+                  ₹{companyCurrentBalance.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                </span>
+              </div>
+            </Button>
           </div>
         </div>
 
@@ -371,6 +409,46 @@ export function Dashboard() {
             ))}
           </div>
         )}
+      </div>
+
+      {/* Company Live Cash Balance Banner */}
+      <div className="p-3.5 rounded-xl border border-border/80 bg-gradient-to-r from-card via-card to-primary/5 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 rounded-xl bg-primary/10 text-primary">
+            <Wallet className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="font-semibold text-sm">Company Current Balance</h3>
+              <Badge variant="outline" className="border-primary/40 text-primary bg-primary/10 text-[10px]">
+                {entityName}
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Cash collected from sales &amp; incomes, minus operational expenses &amp; cash payouts.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4">
+          <div className="text-right">
+            <div className="text-xs text-muted-foreground">Available Cash</div>
+            <div
+              className={`text-2xl font-bold font-mono ${
+                companyCurrentBalance >= 0 ? "text-emerald-400" : "text-rose-400"
+              }`}
+            >
+              ₹{companyCurrentBalance.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+            </div>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => setBalanceModalOpen(true)}
+            className="h-8 text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer"
+          >
+            Adjust / Add Balance
+          </Button>
+        </div>
       </div>
 
       {/* 4-Card Executive Financial Summary with Distinguished Credit Box */}

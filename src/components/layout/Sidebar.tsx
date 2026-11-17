@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -31,6 +31,12 @@ import {
 import { cn } from "@/lib/utils";
 import { useStore } from "@/store";
 import { useUserAuth } from "@/auth/UserAuthContext";
+import {
+  getTransactions,
+  getCompanyOpeningBalance,
+  calculateCompanyCurrentBalance,
+} from "@/lib/db/queries";
+import { getBusinessEntities } from "@/lib/db/accounting";
 
 interface NavGroup {
   label: string;
@@ -104,7 +110,13 @@ const navGroups: NavGroup[] = [
 export function Sidebar() {
   const setQuickIncomeOpen = useStore((s) => s.setQuickIncomeOpen);
   const setQuickExpenseOpen = useStore((s) => s.setQuickExpenseOpen);
+  const setBalanceModalOpen = useStore((s) => s.setBalanceModalOpen);
+  const selectedEntityId = useStore((s) => s.selectedBusinessEntityId);
+  const refreshTrigger = useStore((s) => s.refreshTrigger);
   const { lock } = useUserAuth();
+
+  const [currentBal, setCurrentBal] = useState<number>(0);
+  const [companyLabel, setCompanyLabel] = useState<string>("Balance");
 
   // Track which groups are collapsed (collapsed by default for Accounting/Banking/Reports)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({
@@ -119,6 +131,31 @@ export function Sidebar() {
     setCollapsed((prev) => ({ ...prev, [label]: !prev[label] }));
   };
 
+  useEffect(() => {
+    let isSubscribed = true;
+    Promise.all([
+      getBusinessEntities(),
+      getTransactions(),
+      getCompanyOpeningBalance(selectedEntityId),
+    ])
+      .then(([entities, txns, opBal]) => {
+        if (!isSubscribed) return;
+        if (selectedEntityId) {
+          const found = entities.find((e: any) => e.id === selectedEntityId);
+          setCompanyLabel(found ? found.name : "Balance");
+        } else {
+          setCompanyLabel("Total Balance");
+        }
+        const bal = calculateCompanyCurrentBalance(txns, opBal, selectedEntityId);
+        setCurrentBal(bal.currentBalance);
+      })
+      .catch(console.error);
+
+    return () => {
+      isSubscribed = false;
+    };
+  }, [selectedEntityId, refreshTrigger]);
+
   return (
     <div className="flex h-screen w-64 flex-col border-r bg-card">
       {/* Logo */}
@@ -127,21 +164,39 @@ export function Sidebar() {
         <p className="text-[10px] text-muted-foreground mt-0.5">Production Management System</p>
       </div>
 
-      {/* Quick Action Buttons */}
+      {/* Quick Action Buttons & Current Balance */}
       <div className="px-3 py-3 space-y-2 border-b border-border/50">
         <button
           onClick={() => setQuickIncomeOpen(true)}
-          className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 transition-colors"
+          className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 transition-colors shadow-sm"
         >
           <PlusCircle className="h-4 w-4" />
           Quick Income
         </button>
         <button
           onClick={() => setQuickExpenseOpen(true)}
-          className="flex w-full items-center justify-center gap-2 rounded-md bg-rose-500 px-4 py-2 text-sm font-medium text-white hover:bg-rose-600 transition-colors"
+          className="flex w-full items-center justify-center gap-2 rounded-md bg-rose-500 px-4 py-2 text-sm font-medium text-white hover:bg-rose-600 transition-colors shadow-sm"
         >
           <MinusCircle className="h-4 w-4" />
           Quick Expense
+        </button>
+        <button
+          onClick={() => setBalanceModalOpen(true)}
+          className="flex w-full items-center justify-between rounded-md bg-secondary/80 border border-border/80 px-3 py-2 text-xs font-semibold text-foreground hover:bg-secondary transition-all hover:border-primary/50 group"
+          title="Click to view, set or add to company current balance"
+        >
+          <span className="flex items-center gap-2 truncate pr-2">
+            <Wallet className="h-4 w-4 text-primary shrink-0 group-hover:scale-110 transition-transform" />
+            <span className="truncate max-w-[85px] text-left">{companyLabel}</span>
+          </span>
+          <span
+            className={cn(
+              "font-mono font-bold text-xs shrink-0",
+              currentBal >= 0 ? "text-emerald-500" : "text-rose-500"
+            )}
+          >
+            ₹{currentBal.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+          </span>
         </button>
       </div>
 

@@ -16,11 +16,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getCategories, getEntities, addTransaction, updateTransaction, getCustomFields, Category, Entity, CustomFieldDef, Transaction } from "@/lib/db/queries";
+import { 
+  getCategories, 
+  getEntities, 
+  addTransaction, 
+  updateTransaction, 
+  getCustomFields, 
+  getTransactions,
+  getCompanyOpeningBalance,
+  calculateCompanyCurrentBalance,
+  Category, 
+  Entity, 
+  CustomFieldDef, 
+  Transaction 
+} from "@/lib/db/queries";
 import { getBankAccounts } from "@/lib/db/accounting";
 import type { BankAccount } from "@/lib/db/erp";
 import { useStore } from "@/store";
-import { CreditCard, Calendar, AlertCircle } from "lucide-react";
+import { CreditCard, Calendar, AlertCircle, Wallet } from "lucide-react";
 import { IosSpinner } from "@/components/ui/IosSpinner";
 
 interface QuickEntryModalProps {
@@ -58,6 +71,8 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
   
   const triggerRefresh = useStore(s => s.triggerRefresh);
   const refreshTrigger = useStore(s => s.refreshTrigger);
+  const selectedEntityId = useStore(s => s.selectedBusinessEntityId);
+  const [currentCompanyBalance, setCurrentCompanyBalance] = useState<number>(0);
 
   useEffect(() => {
     getCategories(type).then(setCategories).catch(console.error);
@@ -65,6 +80,20 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
     getCustomFields().then(setCustomFields).catch(console.error);
     getBankAccounts().then(setBankAccounts).catch(console.error);
   }, [type, refreshTrigger]);
+
+  // Load active company's live current balance
+  useEffect(() => {
+    if (!isOpen) return;
+    Promise.all([
+      getTransactions(),
+      getCompanyOpeningBalance(selectedEntityId),
+    ])
+      .then(([txns, opBal]) => {
+        const bal = calculateCompanyCurrentBalance(txns, opBal, selectedEntityId);
+        setCurrentCompanyBalance(bal.currentBalance);
+      })
+      .catch(console.error);
+  }, [isOpen, selectedEntityId, refreshTrigger]);
 
   // Reset form when modal opens
   useEffect(() => {
@@ -118,6 +147,12 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
   const receivedBank = parseFloat(bankAmount) || 0;
   const receivedBreakdownTotal = receivedCash + receivedBank;
   const selectedBankAccount = bankAccounts.find((bank) => bank.id === bankAccountId);
+
+  // Live balance calculation
+  const actualCashFlow = isCredit ? (parseFloat(paidNowAmount) || 0) : (parseFloat(amount) || 0);
+  const projectedBalance = type === "IN"
+    ? currentCompanyBalance + actualCashFlow
+    : currentCompanyBalance - actualCashFlow;
 
   const handleBankAccountChange = async (id: string) => {
     setBankAccountId(id);
@@ -178,6 +213,7 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
           date: date + "T12:00:00Z",
           category_id: categoryId,
           entity_id: entityId === "none" ? null : entityId,
+          business_entity_id: selectedEntityId || initialTransaction?.business_entity_id || null,
           product_id: null,
           quantity: null,
           description: null,
@@ -203,6 +239,7 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
           date: date + "T12:00:00Z",
           category_id: categoryId,
           entity_id: entityId === "none" ? null : entityId,
+          business_entity_id: selectedEntityId || initialTransaction?.business_entity_id || null,
           product_id: null,
           quantity: null,
           description: null,
@@ -255,8 +292,34 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
           </DialogTitle>
         </DialogHeader>
         
-        <form onSubmit={handleSubmit} className="flex flex-col gap-5 py-2">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4 py-2">
           
+          {/* Live Company Current Balance Indicator */}
+          <div className="flex items-center justify-between px-3.5 py-2.5 rounded-lg border border-border/80 bg-muted/30 text-xs">
+            <div className="flex items-center gap-2">
+              <Wallet className="h-4 w-4 text-primary" />
+              <span className="text-muted-foreground font-medium">Company Balance:</span>
+              <span
+                className={`font-mono font-bold ${
+                  currentCompanyBalance >= 0 ? "text-emerald-500" : "text-rose-500"
+                }`}
+              >
+                ₹{currentCompanyBalance.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+              </span>
+            </div>
+            {actualCashFlow > 0 && (
+              <div className="flex items-center gap-1.5 font-mono text-[11px]">
+                <span className={type === "IN" ? "text-emerald-500 font-semibold" : "text-rose-500 font-semibold"}>
+                  {type === "IN" ? "+" : "-"}₹{actualCashFlow.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                </span>
+                <span className="text-muted-foreground">→</span>
+                <span className={`font-bold ${projectedBalance >= 0 ? "text-foreground" : "text-rose-500"}`}>
+                  ₹{projectedBalance.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                </span>
+              </div>
+            )}
+          </div>
+
           {/* Credit Toggle Pill */}
           <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/40 transition-colors">
             <div className="flex items-center gap-2.5">

@@ -17,13 +17,15 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  UserCheck, PlusCircle, CreditCard, ShieldCheck,
+  UserCheck, PlusCircle, CreditCard, ShieldCheck, Pencil, Ban,
 } from "lucide-react";
 import type { SalaryRecord, Employee, Partner, BankAccount } from "@/lib/db/erp";
 import {
   getSalaryRecords,
   bookSalary,
   paySalary,
+  updateSalaryBooking,
+  cancelSalaryBooking,
   getEmployees,
   getPartners,
   getBankAccounts,
@@ -71,6 +73,19 @@ export function Salary() {
   const [payDate, setPayDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [payRef, setPayRef] = useState("");
   const [payValidationError, setPayValidationError] = useState("");
+
+  // Edit Booking Modal
+  const [editingRecord, setEditingRecord] = useState<SalaryRecord | null>(null);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [editVoucherDate, setEditVoucherDate] = useState("");
+  const [editSalaryMonth, setEditSalaryMonth] = useState("");
+  const [editSalaryFrequency, setEditSalaryFrequency] = useState<"monthly" | "weekly">("monthly");
+  const [editPayeeType, setEditPayeeType] = useState<"employee" | "partner">("employee");
+  const [editPayeeId, setEditPayeeId] = useState("");
+  const [editBookedAmount, setEditBookedAmount] = useState("");
+  const [editNarration, setEditNarration] = useState("");
+  const [editError, setEditError] = useState("");
 
   const loadData = () => {
     setLoading(true);
@@ -226,6 +241,92 @@ export function Salary() {
       alert("Error processing payment: " + (err.message || err));
     } finally {
       setPaySubmitting(false);
+    }
+  };
+
+  const handleOpenEdit = (rec: SalaryRecord) => {
+    setEditingRecord(rec);
+    setEditVoucherDate(rec.voucher_date ? rec.voucher_date.split("T")[0] : new Date().toISOString().split("T")[0]);
+    setEditSalaryMonth(rec.salary_month);
+    setEditSalaryFrequency(rec.salary_frequency || "monthly");
+    setEditPayeeType(rec.payee_type);
+    setEditPayeeId(rec.employee_id || rec.partner_id || "");
+    setEditBookedAmount(rec.booked_amount.toString());
+    setEditNarration(rec.narration || "");
+    setEditError("");
+    setEditDialogOpen(true);
+  };
+
+  const handleEditSalarySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingRecord) return;
+    setEditError("");
+
+    const amountNum = parseFloat(editBookedAmount);
+    if (!amountNum || amountNum <= 0) {
+      setEditError("Please enter a valid salary amount.");
+      return;
+    }
+
+    const paidAmt = Number(editingRecord.paid_amount || 0);
+    if (amountNum < paidAmt) {
+      setEditError(`Booked salary cannot be less than already paid amount (₹${paidAmt.toLocaleString()}).`);
+      return;
+    }
+
+    setEditSubmitting(true);
+    try {
+      let payeeName = editingRecord.payee_name;
+      if (editPayeeType === "employee") {
+        payeeName = employees.find((e) => e.id === editPayeeId)?.name || payeeName;
+      } else {
+        payeeName = partners.find((p) => p.id === editPayeeId)?.name || payeeName;
+      }
+
+      await updateSalaryBooking({
+        id: editingRecord.id,
+        voucher_date: editVoucherDate + "T12:00:00Z",
+        salary_month: editSalaryMonth,
+        salary_frequency: editSalaryFrequency,
+        payee_type: editPayeeType,
+        employee_id: editPayeeType === "employee" ? editPayeeId : null,
+        partner_id: editPayeeType === "partner" ? editPayeeId : null,
+        payee_name: payeeName,
+        booked_amount: amountNum,
+        narration: editNarration || null,
+      });
+
+      triggerRefresh();
+      setEditDialogOpen(false);
+      setEditingRecord(null);
+      await loadData();
+    } catch (err: any) {
+      setEditError("Error updating salary booking: " + (err.message || err));
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
+  const handleCancelSalary = async (rec: SalaryRecord) => {
+    const paidAmt = Number(rec.paid_amount || 0);
+    if (paidAmt > 0) {
+      alert(`Cannot cancel salary booking with disbursed payments (₹${paidAmt.toLocaleString()} already paid). Please adjust the booked amount instead.`);
+      return;
+    }
+
+    if (!window.confirm(`Are you sure you want to cancel the salary booking for ${rec.payee_name} (${rec.salary_month})?`)) {
+      return;
+    }
+
+    try {
+      // Optimistic update
+      setRecords((prev) => prev.filter((r) => r.id !== rec.id));
+      await cancelSalaryBooking(rec.id);
+      triggerRefresh();
+      await loadData();
+    } catch (err: any) {
+      alert("Error cancelling salary booking: " + (err.message || err));
+      loadData();
     }
   };
 
@@ -436,16 +537,39 @@ export function Salary() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      {Number(r.pending_amount) > 0 && (
+                      <div className="flex items-center justify-end gap-1">
+                        {Number(r.pending_amount) > 0 && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleOpenPay(r)}
+                            className="h-7 text-xs border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 cursor-pointer"
+                            title="Disburse salary payment"
+                          >
+                            <CreditCard className="h-3 w-3 mr-1" /> Pay
+                          </Button>
+                        )}
                         <Button
-                          variant="outline"
+                          variant="ghost"
                           size="sm"
-                          onClick={() => handleOpenPay(r)}
-                          className="h-7 text-xs border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 cursor-pointer"
+                          onClick={() => handleOpenEdit(r)}
+                          className="h-7 text-xs text-muted-foreground hover:text-primary cursor-pointer"
+                          title="Edit salary booking"
                         >
-                          <CreditCard className="h-3 w-3 mr-1" /> Pay
+                          <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
                         </Button>
-                      )}
+                        {Number(r.paid_amount || 0) === 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleCancelSalary(r)}
+                            className="h-7 text-xs text-muted-foreground hover:text-rose-400 cursor-pointer"
+                            title="Cancel salary booking"
+                          >
+                            <Ban className="h-3.5 w-3.5 mr-1" /> Cancel
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -575,6 +699,168 @@ export function Salary() {
                 className="bg-emerald-600 hover:bg-emerald-500 text-white h-8 text-xs cursor-pointer"
               >
                 {bookSubmitting ? "Accruing..." : "Book Salary"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Salary Booking Modal */}
+      <Dialog
+        open={editDialogOpen}
+        onOpenChange={(open) => {
+          setEditDialogOpen(open);
+          if (!open) {
+            setEditingRecord(null);
+            setEditError("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[480px]">
+          <form onSubmit={handleEditSalarySubmit}>
+            <DialogHeader>
+              <DialogTitle>Edit Salary Booking</DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4 py-3 text-xs">
+              {editingRecord && Number(editingRecord.paid_amount || 0) > 0 && (
+                <div className="p-2.5 rounded bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-300">
+                  Notice: ₹{Number(editingRecord.paid_amount).toLocaleString()} has already been paid for this record.
+                  The booked amount cannot be reduced below this paid amount.
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Voucher Date *</Label>
+                  <Input
+                    type="date"
+                    value={editVoucherDate}
+                    onChange={(e) => setEditVoucherDate(e.target.value)}
+                    required
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Salary Month *</Label>
+                  <Input
+                    type="month"
+                    value={editSalaryMonth}
+                    onChange={(e) => setEditSalaryMonth(e.target.value)}
+                    required
+                    className="h-8 text-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Salary Frequency *</Label>
+                  <Select
+                    value={editSalaryFrequency}
+                    onValueChange={(val: "monthly" | "weekly") => setEditSalaryFrequency(val)}
+                  >
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="monthly">Monthly</SelectItem>
+                      <SelectItem value="weekly">Weekly</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Payee Type *</Label>
+                  <Select
+                    value={editPayeeType}
+                    onValueChange={(val: "employee" | "partner") => {
+                      setEditPayeeType(val);
+                      if (val === "employee") {
+                        setEditPayeeId(employees[0]?.id || "");
+                      } else {
+                        setEditPayeeId(partners[0]?.id || "");
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="employee">Employee / Staff</SelectItem>
+                      <SelectItem value="partner">Partner</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs">Select Individual *</Label>
+                <Select value={editPayeeId} onValueChange={setEditPayeeId}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Select Payee" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {editPayeeType === "employee"
+                      ? employees.map((e) => (
+                          <SelectItem key={e.id} value={e.id}>
+                            {e.name} ({e.designation || "Staff"})
+                          </SelectItem>
+                        ))
+                      : partners.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.name} (Partner)
+                          </SelectItem>
+                        ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs">Salary Amount (₹) *</Label>
+                <Input
+                  type="number"
+                  placeholder="0.00"
+                  value={editBookedAmount}
+                  onChange={(e) => setEditBookedAmount(e.target.value)}
+                  required
+                  min={editingRecord ? Number(editingRecord.paid_amount || 0) : 1}
+                  step="0.01"
+                  className="h-8 text-xs font-bold text-blue-400"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs">Narration</Label>
+                <Input
+                  placeholder="e.g. October monthly salary"
+                  value={editNarration}
+                  onChange={(e) => setEditNarration(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+
+              {editError && <p className="text-[11px] text-rose-400">{editError}</p>}
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setEditDialogOpen(false);
+                  setEditingRecord(null);
+                  setEditError("");
+                }}
+                className="h-8 text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={editSubmitting || parseFloat(editBookedAmount) <= 0}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white h-8 text-xs cursor-pointer"
+              >
+                {editSubmitting ? "Updating..." : "Save Changes"}
               </Button>
             </DialogFooter>
           </form>

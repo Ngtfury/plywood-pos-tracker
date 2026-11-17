@@ -4,8 +4,10 @@ import { persist } from 'zustand/middleware';
 interface AppState {
   isQuickIncomeOpen: boolean;
   isQuickExpenseOpen: boolean;
+  isBalanceModalOpen: boolean;
   setQuickIncomeOpen: (open: boolean) => void;
   setQuickExpenseOpen: (open: boolean) => void;
+  setBalanceModalOpen: (open: boolean) => void;
 
   // A simple counter to trigger refetches in components when data changes
   refreshTrigger: number;
@@ -21,8 +23,10 @@ export const useStore = create<AppState>()(
     (set) => ({
       isQuickIncomeOpen: false,
       isQuickExpenseOpen: false,
+      isBalanceModalOpen: false,
       setQuickIncomeOpen: (open) => set({ isQuickIncomeOpen: open }),
       setQuickExpenseOpen: (open) => set({ isQuickExpenseOpen: open }),
+      setBalanceModalOpen: (open) => set({ isBalanceModalOpen: open }),
 
       refreshTrigger: 0,
       triggerRefresh: () => set((state) => ({ refreshTrigger: state.refreshTrigger + 1 })),

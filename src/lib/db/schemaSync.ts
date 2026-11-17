@@ -148,6 +148,47 @@ export async function checkSchemaHealth(): Promise<SchemaHealthResult> {
     missingFunctions.push('get_next_voucher_number');
   }
 
+  // Check update_journal_entry
+  try {
+    const { error: jeErr } = await supabase.rpc('update_journal_entry', {
+      p_journal_id: 'non_existent_probe',
+      p_entry_date: new Date().toISOString(),
+      p_reference: null,
+      p_narration: 'probe',
+      p_lines: [
+        { account_id: 'acc_cash', debit_amount: 1, credit_amount: 0 },
+        { account_id: 'acc_sales', debit_amount: 0, credit_amount: 1 }
+      ],
+    });
+    // If function does not exist, PGRST202 is returned
+    if (jeErr && (jeErr.code === 'PGRST202' || jeErr.message?.includes('not find'))) {
+      missingFunctions.push('update_journal_entry');
+    }
+  } catch {
+    missingFunctions.push('update_journal_entry');
+  }
+
+  // Check update_salary_booking
+  try {
+    const { error: salErr } = await supabase.rpc('update_salary_booking', {
+      p_record_id: 'non_existent_probe',
+      p_voucher_date: new Date().toISOString(),
+      p_salary_month: '2026-01',
+      p_salary_frequency: 'monthly',
+      p_payee_type: 'employee',
+      p_employee_id: null,
+      p_partner_id: null,
+      p_payee_name: 'probe',
+      p_booked_amount: 1,
+      p_narration: 'probe',
+    });
+    if (salErr && (salErr.code === 'PGRST202' || salErr.message?.includes('not find'))) {
+      missingFunctions.push('update_salary_booking');
+    }
+  } catch {
+    missingFunctions.push('update_salary_booking');
+  }
+
   const isFit = missingTables.length === 0 && missingColumns.length === 0 && missingFunctions.length === 0;
 
   let summary = 'Schema is fully up to date and verified.';

@@ -478,6 +478,15 @@ BEGIN
         ALTER TABLE public.salary_records ADD COLUMN payment_journal_id TEXT REFERENCES public.journal_entries(id) ON DELETE SET NULL;
     END IF;
 
+    -- Transactions company link
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'transactions' AND column_name = 'business_entity_id') THEN
+        ALTER TABLE public.transactions ADD COLUMN business_entity_id TEXT REFERENCES public.business_entities(id) ON DELETE SET NULL;
+    END IF;
+    -- Journal entries updated_at
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'journal_entries' AND column_name = 'updated_at') THEN
+        ALTER TABLE public.journal_entries ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
+    END IF;
+
     -- Master edit functionality fields: Entities (Customers & Suppliers)
     ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS email TEXT;
     ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS alt_phone TEXT;
@@ -1447,6 +1456,86 @@ END;
 $$;
 
 -- -------------------------------------------------------------------------
+-- FN 6.8b: update_journal_entry
+-- -------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.update_journal_entry(
+    p_journal_id TEXT,
+    p_entry_date TIMESTAMPTZ,
+    p_reference  TEXT,
+    p_narration  TEXT,
+    p_lines      JSONB
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_entry public.journal_entries%ROWTYPE;
+    l      JSONB;
+    debit  NUMERIC := 0;
+    credit NUMERIC := 0;
+BEGIN
+    SELECT * INTO v_entry
+    FROM public.journal_entries
+    WHERE id = p_journal_id
+    FOR UPDATE;
+
+    IF v_entry.id IS NULL THEN
+        RAISE EXCEPTION 'Journal entry % not found', p_journal_id;
+    END IF;
+    IF v_entry.status = 'cancelled' THEN
+        RAISE EXCEPTION 'Cannot edit cancelled journal entry %', p_journal_id;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM public.bank_reconciliation_matches
+        WHERE journal_entry_id = p_journal_id
+    ) THEN
+        RAISE EXCEPTION 'Cannot edit journal entry %: reconciled in bank reconciliation.', p_journal_id;
+    END IF;
+
+    IF jsonb_array_length(p_lines) < 2 THEN
+        RAISE EXCEPTION 'Journal entry requires at least two lines';
+    END IF;
+
+    FOR l IN SELECT * FROM jsonb_array_elements(p_lines) LOOP
+        debit  := debit  + COALESCE((l->>'debit_amount')::numeric, 0);
+        credit := credit + COALESCE((l->>'credit_amount')::numeric, 0);
+    END LOOP;
+
+    IF debit <= 0 OR ABS(debit - credit) > 0.005 THEN
+        RAISE EXCEPTION 'Journal entry is unbalanced: Total Debits %, Total Credits %', debit, credit;
+    END IF;
+
+    -- Update header
+    UPDATE public.journal_entries
+    SET entry_date = p_entry_date,
+        reference = p_reference,
+        narration = p_narration,
+        total_debit = ROUND(debit, 2),
+        total_credit = ROUND(credit, 2),
+        is_balanced = true,
+        updated_at = NOW()
+    WHERE id = p_journal_id;
+
+    -- Replace lines atomically
+    DELETE FROM public.journal_lines WHERE journal_id = p_journal_id;
+
+    FOR l IN SELECT * FROM jsonb_array_elements(p_lines) LOOP
+        INSERT INTO public.journal_lines (
+            journal_id, account_id, debit_amount, credit_amount, narration
+        ) VALUES (
+            p_journal_id,
+            l->>'account_id',
+            ROUND(COALESCE((l->>'debit_amount')::numeric, 0), 2),
+            ROUND(COALESCE((l->>'credit_amount')::numeric, 0), 2),
+            NULLIF(l->>'narration', '')
+        );
+    END LOOP;
+END;
+$$;
+
+-- -------------------------------------------------------------------------
 -- FN 6.9: post_salary_booking
 -- -------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.post_salary_booking(
@@ -1554,6 +1643,115 @@ BEGIN
     IF p_bank_id IS NOT NULL THEN
         PERFORM public.refresh_bank_account_balance(p_bank_id);
     END IF;
+END;
+$$;
+
+-- -------------------------------------------------------------------------
+-- FN 6.10b: update_salary_booking
+-- -------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.update_salary_booking(
+    p_record_id        TEXT,
+    p_voucher_date     TIMESTAMPTZ,
+    p_salary_month     TEXT,
+    p_salary_frequency TEXT,
+    p_payee_type       TEXT,
+    p_employee_id      TEXT,
+    p_partner_id       TEXT,
+    p_payee_name       TEXT,
+    p_booked_amount    NUMERIC,
+    p_narration        TEXT
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    r public.salary_records%ROWTYPE;
+BEGIN
+    SELECT * INTO r
+    FROM public.salary_records
+    WHERE id = p_record_id
+    FOR UPDATE;
+
+    IF r.id IS NULL THEN
+        RAISE EXCEPTION 'Salary record % not found', p_record_id;
+    END IF;
+
+    IF p_booked_amount < r.paid_amount THEN
+        RAISE EXCEPTION 'Booked amount (₹%) cannot be less than already disbursed amount (₹%)', p_booked_amount, r.paid_amount;
+    END IF;
+
+    -- Update linked booking journal entry if exists
+    IF r.booking_journal_id IS NOT NULL THEN
+        UPDATE public.journal_entries
+        SET entry_date = p_voucher_date,
+            total_debit = ROUND(p_booked_amount, 2),
+            total_credit = ROUND(p_booked_amount, 2),
+            narration = 'Salary booking: ' || p_payee_name
+        WHERE id = r.booking_journal_id;
+
+        UPDATE public.journal_lines
+        SET debit_amount = ROUND(p_booked_amount, 2)
+        WHERE journal_id = r.booking_journal_id AND debit_amount > 0;
+
+        UPDATE public.journal_lines
+        SET credit_amount = ROUND(p_booked_amount, 2)
+        WHERE journal_id = r.booking_journal_id AND credit_amount > 0;
+    END IF;
+
+    -- Update salary record
+    UPDATE public.salary_records
+    SET voucher_date = p_voucher_date,
+        salary_month = p_salary_month,
+        salary_frequency = COALESCE(NULLIF(p_salary_frequency, ''), 'monthly'),
+        payee_type = p_payee_type,
+        employee_id = NULLIF(p_employee_id, ''),
+        partner_id = NULLIF(p_partner_id, ''),
+        payee_name = p_payee_name,
+        booked_amount = ROUND(p_booked_amount, 2),
+        status = CASE WHEN r.paid_amount >= p_booked_amount THEN 'paid'
+                      WHEN r.paid_amount > 0 THEN 'partial'
+                      ELSE 'booked' END,
+        narration = p_narration
+    WHERE id = p_record_id;
+END;
+$$;
+
+-- -------------------------------------------------------------------------
+-- FN 6.10c: cancel_salary_booking
+-- -------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.cancel_salary_booking(
+    p_record_id TEXT
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    r public.salary_records%ROWTYPE;
+BEGIN
+    SELECT * INTO r
+    FROM public.salary_records
+    WHERE id = p_record_id
+    FOR UPDATE;
+
+    IF r.id IS NULL THEN
+        RAISE EXCEPTION 'Salary record % not found', p_record_id;
+    END IF;
+    IF r.paid_amount > 0 THEN
+        RAISE EXCEPTION 'Cannot cancel salary record %: payments have already been disbursed (₹%).', p_record_id, r.paid_amount;
+    END IF;
+
+    -- Cancel linked booking journal
+    IF r.booking_journal_id IS NOT NULL THEN
+        UPDATE public.journal_entries
+        SET status = 'cancelled'
+        WHERE id = r.booking_journal_id;
+    END IF;
+
+    DELETE FROM public.salary_records WHERE id = p_record_id;
 END;
 $$;
 
