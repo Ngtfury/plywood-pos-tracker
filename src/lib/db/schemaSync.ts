@@ -118,9 +118,16 @@ export async function checkSchemaHealth(): Promise<SchemaHealthResult> {
   }
 
   if (!missingTables.includes('transactions')) {
-    const { error } = await supabase.from('transactions').select('total_amount, paid_amount, balance_due, credit_status', { head: true }).limit(1);
+    const { error } = await supabase.from('transactions').select('total_amount, paid_amount, balance_due, credit_status, business_entity_id', { head: true }).limit(1);
     if (error && (error.code === '42703' || error.message.includes('column') || error.code === 'PGRST204')) {
       missingColumns.push('transactions.balance_due');
+    }
+  }
+
+  if (!missingTables.includes('bank_statement_transactions')) {
+    const { error } = await supabase.from('bank_statement_transactions').select('review_status', { head: true }).limit(1);
+    if (error && (error.code === '42703' || error.message.includes('column') || error.code === 'PGRST204')) {
+      missingColumns.push('bank_statement_transactions.review_status');
     }
   }
 

@@ -292,14 +292,21 @@ export interface BankStatementTransaction {
   debit_amount: number;
   credit_amount: number;
   balance: number | null;
+  balance_after?: number | null;
   reference: string | null;
+  reference_no?: string | null;
   is_matched: boolean;
   import_batch: string | null;
+  transaction_id?: string | null;
+  potential_duplicate_id?: string | null;
+  duplicate_reason?: string | null;
+  review_status?: 'auto_added' | 'under_review' | 'merged' | 'dismissed';
   created_at: string;
   // joined
   bank_name?: string;
   account_no?: string;
   match?: BankReconciliationMatch | null;
+  matched_transaction?: any | null;
 }
 
 export interface BankReconciliationMatch {

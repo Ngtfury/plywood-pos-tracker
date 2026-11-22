@@ -368,17 +368,35 @@ CREATE TABLE IF NOT EXISTS public.salary_records (
 
 -- 2.16 Bank Statement Transactions Table
 CREATE TABLE IF NOT EXISTS public.bank_statement_transactions (
-    id                 TEXT PRIMARY KEY DEFAULT 'bst_' || gen_random_uuid()::text,
-    bank_account_id    TEXT NOT NULL REFERENCES public.bank_accounts(id) ON DELETE CASCADE,
-    txn_date           DATE NOT NULL,
-    description        TEXT,
-    reference_no       TEXT,
-    debit_amount       NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
-    credit_amount      NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
-    balance_after      NUMERIC(14, 2),
-    is_matched         BOOLEAN NOT NULL DEFAULT false,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                     TEXT PRIMARY KEY DEFAULT 'bst_' || gen_random_uuid()::text,
+    bank_account_id        TEXT NOT NULL REFERENCES public.bank_accounts(id) ON DELETE CASCADE,
+    txn_date               DATE NOT NULL,
+    description            TEXT,
+    reference_no           TEXT,
+    reference              TEXT,
+    debit_amount           NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+    credit_amount          NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+    balance_after          NUMERIC(14, 2),
+    balance                NUMERIC(14, 2),
+    is_matched             BOOLEAN NOT NULL DEFAULT false,
+    import_batch           TEXT,
+    transaction_id         TEXT REFERENCES public.transactions(id) ON DELETE SET NULL,
+    potential_duplicate_id TEXT REFERENCES public.transactions(id) ON DELETE SET NULL,
+    duplicate_reason       TEXT,
+    review_status          TEXT NOT NULL DEFAULT 'auto_added',
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Non-destructive column additions for existing installations
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS reference TEXT;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS reference_no TEXT;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS balance NUMERIC(14, 2);
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS balance_after NUMERIC(14, 2);
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS import_batch TEXT;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS transaction_id TEXT REFERENCES public.transactions(id) ON DELETE SET NULL;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS potential_duplicate_id TEXT REFERENCES public.transactions(id) ON DELETE SET NULL;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS duplicate_reason TEXT;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS review_status TEXT DEFAULT 'auto_added';
 
 -- 2.17 Bank Reconciliation Matches Table
 CREATE TABLE IF NOT EXISTS public.bank_reconciliation_matches (
@@ -1810,6 +1828,8 @@ INSERT INTO public.categories (id, name, type, color, icon) VALUES
     ('cat_food',           'Tea & Refreshments',            'OUT', '#ec4899', 'coffee'),
     ('cat_settle_in',      'Debt Recovery / Credit IN',     'IN',  '#34d399', 'hand-coins'),
     ('cat_settle_out',     'Credit Disbursement OUT',       'OUT', '#f43f5e', 'hand-coins'),
+    ('cat_bank_deposit',   'Bank Deposit / Inflow',         'IN',  '#10b981', 'landmark'),
+    ('cat_bank_charges',   'Bank Charges / Outflow',        'OUT', '#f43f5e', 'landmark'),
     ('cat_misc',           'Miscellaneous Expenses',        'OUT', '#64748b', 'box')
 ON CONFLICT (id) DO NOTHING;
 
@@ -2010,7 +2030,7 @@ BEGIN
     INSERT INTO public.transactions (
         id, type, amount, total_amount, paid_amount, balance_due, credit_status,
         due_date, date, category_id, entity_id, product_id, quantity, description,
-        notes, reference, custom_data
+        notes, reference, custom_data, business_entity_id
     )
     VALUES (
         v_id, v_type, (p_transaction->>'amount')::NUMERIC,
@@ -2027,7 +2047,8 @@ BEGIN
         NULLIF(p_transaction->>'description', ''),
         NULLIF(p_transaction->>'notes', ''),
         NULLIF(p_transaction->>'reference', ''),
-        COALESCE(p_transaction->'custom_data', '{}'::JSONB)
+        COALESCE(p_transaction->'custom_data', '{}'::JSONB),
+        NULLIF(p_transaction->>'business_entity_id', '')
     )
     ON CONFLICT (id) DO NOTHING
     RETURNING id INTO v_inserted_id;
