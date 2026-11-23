@@ -17,7 +17,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  Package, AlertTriangle, ArrowUpDown, PlusCircle, Search, Layers
+  Package, AlertTriangle, ArrowUpDown, PlusCircle, Search, Layers, Pencil
 } from "lucide-react";
 import type { StockBalance, Product, ProductVariant } from "@/lib/db/erp";
 import {
@@ -30,6 +30,7 @@ import {
   getProducts,
   getProductVariants,
   postStockMovement,
+  updateStockBalance,
 } from "@/lib/db/inventory";
 
 export function Inventory() {
@@ -150,6 +151,92 @@ export function Inventory() {
       setAdjustSubmitting(false);
     }
   };
+
+  // Edit Added Stock Dialog
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingStock, setEditingStock] = useState<StockBalance | null>(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [editQtySheets, setEditQtySheets] = useState("");
+  const [editQtySqft, setEditQtySqft] = useState("");
+  const [editQtyPieces, setEditQtyPieces] = useState("");
+  const [editQtyOther, setEditQtyOther] = useState("");
+  const [editNarration, setEditNarration] = useState("");
+
+  const handleOpenEditStock = (row: StockBalance) => {
+    setEditingStock(row);
+    setEditQtySheets(String(Number(row.qty_sheets) || 0));
+    setEditQtySqft(String(Number(row.qty_sqft) || 0));
+    setEditQtyPieces(String(Number(row.qty_pieces) || 0));
+    setEditQtyOther(String(Number(row.qty_other) || 0));
+    setEditNarration("Physical count correction");
+    setEditDialogOpen(true);
+  };
+
+  const handleEditSheetsChange = (val: string) => {
+    setEditQtySheets(val);
+    const num = parseFloat(val) || 0;
+    if (editingStock) {
+      const perSheet = editingStock.sqft_per_sheet || (editingStock.variant_size ? getSqftPerSheet(editingStock.variant_size) : 0);
+      if (perSheet > 0) {
+        setEditQtySqft((num * perSheet).toFixed(2));
+      }
+    }
+  };
+
+  const handleSaveEditStock = async () => {
+    if (!editingStock) return;
+
+    const newSheets = parseFloat(editQtySheets) || 0;
+    const newSqft = parseFloat(editQtySqft) || 0;
+    const newPieces = parseFloat(editQtyPieces) || 0;
+    const newOther = parseFloat(editQtyOther) || 0;
+
+    if (newSheets < 0 || newSqft < 0 || newPieces < 0 || newOther < 0) {
+      alert("Stock quantities cannot be negative.");
+      return;
+    }
+
+    setEditSubmitting(true);
+    try {
+      await updateStockBalance({
+        stockBalanceId: editingStock.id,
+        businessEntityId: editingStock.business_entity_id || selectedEntityId || "",
+        productId: editingStock.product_id,
+        variantId: editingStock.variant_id || null,
+        newQtySheets: newSheets,
+        newQtySqft: newSqft,
+        newQtyPieces: newPieces,
+        newQtyOther: newOther,
+        oldValues: editingStock,
+        narration: editNarration || "Manual inventory edit / physical count correction",
+      });
+      triggerRefresh();
+      setEditDialogOpen(false);
+      setEditingStock(null);
+    } catch (err: any) {
+      alert("Failed to update stock: " + (err.message || err));
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
+  const isEditingPlywood = editingStock?.product_category === "plywood";
+  const isEditingVeneer = editingStock?.product_category === "face_veneer" || editingStock?.product_category === "other_veneer";
+
+  const editCurSheets = Number(editingStock?.qty_sheets) || 0;
+  const editCurSqft = Number(editingStock?.qty_sqft) || 0;
+  const editCurPieces = Number(editingStock?.qty_pieces) || 0;
+  const editCurOther = Number(editingStock?.qty_other) || 0;
+
+  const editNewSheets = parseFloat(editQtySheets) || 0;
+  const editNewSqft = parseFloat(editQtySqft) || 0;
+  const editNewPieces = parseFloat(editQtyPieces) || 0;
+  const editNewOther = parseFloat(editQtyOther) || 0;
+
+  const diffSheets = editNewSheets - editCurSheets;
+  const diffSqft = editNewSqft - editCurSqft;
+  const diffPieces = editNewPieces - editCurPieces;
+  const diffOther = editNewOther - editCurOther;
 
   // Filtered Stock
   const filteredStock = useMemo(() => {
@@ -346,12 +433,13 @@ export function Inventory() {
                 <TableHead className="text-right">Other Qty</TableHead>
                 <TableHead>Entity</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="text-right w-[90px]">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filteredStock.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="text-center py-8 text-muted-foreground text-sm">
+                  <TableCell colSpan={11} className="text-center py-8 text-muted-foreground text-sm">
                     No stock records match the selected filter. Click "Add / Adjust Stock" to record initial inventory.
                   </TableCell>
                 </TableRow>
@@ -401,6 +489,18 @@ export function Inventory() {
                             In Stock
                           </Badge>
                         )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleOpenEditStock(row)}
+                          className="h-8 px-2.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer flex items-center gap-1.5 ml-auto"
+                          title="Edit Stock Balance"
+                        >
+                          <Pencil className="h-3.5 w-3.5 text-primary" />
+                          <span>Edit</span>
+                        </Button>
                       </TableCell>
                     </TableRow>
                   );
@@ -550,6 +650,180 @@ export function Inventory() {
               className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs h-8 cursor-pointer"
             >
               {adjustSubmitting ? "Posting..." : "Confirm & Save Stock"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Added Stock Dialog */}
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Pencil className="h-5 w-5 text-emerald-400" />
+              <span>Edit Stock Balance</span>
+            </DialogTitle>
+          </DialogHeader>
+
+          {editingStock && (
+            <div className="grid gap-4 py-2 text-xs">
+              {/* Product Info Summary Box */}
+              <div className="p-3 rounded-lg border bg-muted/40 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="font-semibold text-sm text-foreground">
+                      {editingStock.product_name}
+                    </h4>
+                    <p className="text-muted-foreground text-xs mt-0.5">
+                      {editingStock.variant_size ? `Size: ${editingStock.variant_size}` : "Standard Size"}
+                      {editingStock.variant_thickness ? ` • ${editingStock.variant_thickness} mm` : ""}
+                    </p>
+                  </div>
+                  <Badge variant="outline" className={getCategoryBadgeClass(editingStock.product_category)}>
+                    {editingStock.product_category?.replace("_", " ") || "Other"}
+                  </Badge>
+                </div>
+                <div className="flex items-center justify-between pt-1 border-t border-border/60 text-[11px] text-muted-foreground">
+                  <span>Operating Entity: <strong className="text-foreground">{editingStock.business_entity_name || "Consolidated / Default"}</strong></span>
+                  {editingStock.sqft_per_sheet && (
+                    <span>Sq.Ft/Sheet: <strong className="text-foreground">{editingStock.sqft_per_sheet}</strong></span>
+                  )}
+                </div>
+              </div>
+
+              {/* Quantity Fields */}
+              {isEditingPlywood ? (
+                <div className="p-3.5 rounded-lg border border-blue-500/30 bg-blue-500/5 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs font-semibold">Sheets Count *</Label>
+                        <span className="text-[11px] text-muted-foreground">Current: {editCurSheets}</span>
+                      </div>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="e.g. 100"
+                        value={editQtySheets}
+                        onChange={(e) => handleEditSheetsChange(e.target.value)}
+                        className="h-8 text-xs font-mono font-medium"
+                        autoFocus
+                      />
+                      {diffSheets !== 0 && (
+                        <div className="text-[11px] flex items-center gap-1">
+                          <span className="text-muted-foreground">Change:</span>
+                          <span className={`font-semibold ${diffSheets > 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            {diffSheets > 0 ? `+${diffSheets}` : diffSheets} sheets
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs font-semibold">Total Area (Sq.Ft) *</Label>
+                        <span className="text-[11px] text-muted-foreground">Current: {editCurSqft}</span>
+                      </div>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="e.g. 3200"
+                        value={editQtySqft}
+                        onChange={(e) => setEditQtySqft(e.target.value)}
+                        className="h-8 text-xs font-mono font-medium"
+                      />
+                      {diffSqft !== 0 && (
+                        <div className="text-[11px] flex items-center gap-1">
+                          <span className="text-muted-foreground">Area Delta:</span>
+                          <span className={`font-semibold ${diffSqft > 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            {diffSqft > 0 ? `+${diffSqft.toFixed(2)}` : diffSqft.toFixed(2)} sq.ft
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : isEditingVeneer ? (
+                <div className="p-3.5 rounded-lg border border-emerald-500/30 bg-emerald-500/5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-semibold">Veneer Quantity (Pieces) *</Label>
+                    <span className="text-[11px] text-muted-foreground">Current: {editCurPieces}</span>
+                  </div>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="e.g. 500"
+                    value={editQtyPieces}
+                    onChange={(e) => setEditQtyPieces(e.target.value)}
+                    className="h-8 text-xs font-mono font-medium"
+                    autoFocus
+                  />
+                  {diffPieces !== 0 && (
+                    <div className="text-[11px] flex items-center gap-1">
+                      <span className="text-muted-foreground">Change:</span>
+                      <span className={`font-semibold ${diffPieces > 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                        {diffPieces > 0 ? `+${diffPieces}` : diffPieces} pieces
+                      </span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="p-3.5 rounded-lg border border-amber-500/30 bg-amber-500/5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-semibold">Stock Quantity (Units) *</Label>
+                    <span className="text-[11px] text-muted-foreground">Current: {editCurOther}</span>
+                  </div>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="e.g. 50"
+                    value={editQtyOther}
+                    onChange={(e) => setEditQtyOther(e.target.value)}
+                    className="h-8 text-xs font-mono font-medium"
+                    autoFocus
+                  />
+                  {diffOther !== 0 && (
+                    <div className="text-[11px] flex items-center gap-1">
+                      <span className="text-muted-foreground">Change:</span>
+                      <span className={`font-semibold ${diffOther > 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                        {diffOther > 0 ? `+${diffOther}` : diffOther}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Reason / Narration Field */}
+              <div className="space-y-1.5">
+                <Label className="text-xs">Adjustment Reason / Audit Note</Label>
+                <Input
+                  placeholder="e.g. Physical inventory audit, breakage write-off, count correction"
+                  value={editNarration}
+                  onChange={(e) => setEditNarration(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => { setEditDialogOpen(false); setEditingStock(null); }}
+              className="text-xs h-8"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveEditStock}
+              disabled={editSubmitting || !editingStock}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs h-8 cursor-pointer"
+            >
+              {editSubmitting ? "Updating Stock..." : "Save Stock Changes"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -10,6 +10,7 @@ import type {
   Account, Voucher, VoucherLine, JournalEntry,
   SalaryRecord, Employee, Partner, BankAccount,
 } from './erp';
+import { parseVoucherReference } from './erp';
 
 // ---- Accounts (Chart of Accounts) ----
 
@@ -64,8 +65,9 @@ export async function getVouchers(params: {
     .from('vouchers')
     .select(`
       *,
-      business_entities(name),
-      entities(name, type)
+      business_entities(name, gstin, address, phone),
+      entities(name, type, gstin, address, phone),
+      bank_accounts(bank_name, account_no, ifsc, branch_name)
     `)
     .eq('status', 'posted')
     .order('voucher_date', { ascending: false });
@@ -81,12 +83,23 @@ export async function getVouchers(params: {
   const { data, error } = await q;
   if (error) { console.warn('Error fetching vouchers:', error.message); return []; }
 
-  return ((data || []) as any[]).map(r => ({
-    ...r,
-    business_entity_name: r.business_entities?.name ?? undefined,
-    party_entity_name: r.entities?.name ?? undefined,
-    party_entity_type: r.entities?.type ?? undefined,
-  }));
+  return ((data || []) as any[]).map(r => {
+    const meta = parseVoucherReference(r.reference);
+    return {
+      ...r,
+      business_entity_name: r.business_entities?.name ?? undefined,
+      party_entity_name: r.entities?.name ?? undefined,
+      party_entity_type: r.entities?.type ?? undefined,
+      bank_name: r.bank_accounts?.bank_name ?? undefined,
+      account_no: r.bank_accounts?.account_no ?? undefined,
+      bank_ifsc: r.bank_accounts?.ifsc ?? undefined,
+      bank_branch: r.bank_accounts?.branch_name ?? undefined,
+      transport: meta.transport,
+      shipping: meta.shipping,
+      round_off: meta.roundOff,
+      tax_split: meta.taxSplit,
+    };
+  });
 }
 
 export async function getVoucherWithLines(voucherId: string): Promise<Voucher | null> {
@@ -95,12 +108,13 @@ export async function getVoucherWithLines(voucherId: string): Promise<Voucher | 
     .from('vouchers')
     .select(`
       *,
-      business_entities(name),
-      entities(name, type),
+      business_entities(name, gstin, address, phone),
+      entities(name, type, gstin, address, phone),
+      bank_accounts(bank_name, account_no, ifsc, branch_name),
       voucher_lines(
         *,
         products(name),
-        product_variants(size, thickness)
+        product_variants(size, thickness, sqft_per_sheet)
       )
     `)
     .eq('id', voucherId)
@@ -108,11 +122,20 @@ export async function getVoucherWithLines(voucherId: string): Promise<Voucher | 
 
   if (error || !data) return null;
   const r = data as any;
+  const meta = parseVoucherReference(r.reference);
   return {
     ...r,
     business_entity_name: r.business_entities?.name ?? undefined,
     party_entity_name: r.entities?.name ?? undefined,
     party_entity_type: r.entities?.type ?? undefined,
+    bank_name: r.bank_accounts?.bank_name ?? undefined,
+    account_no: r.bank_accounts?.account_no ?? undefined,
+    bank_ifsc: r.bank_accounts?.ifsc ?? undefined,
+    bank_branch: r.bank_accounts?.branch_name ?? undefined,
+    transport: meta.transport,
+    shipping: meta.shipping,
+    round_off: meta.roundOff,
+    tax_split: meta.taxSplit,
     lines: (r.voucher_lines || []).map((l: any) => ({
       ...l,
       product_name: l.products?.name ?? undefined,
@@ -122,15 +145,83 @@ export async function getVoucherWithLines(voucherId: string): Promise<Voucher | 
   };
 }
 
-export async function getNextVoucherNumber(prefix: string): Promise<string> {
+export async function getNextVoucherNumber(prefix: string, businessEntityId?: string): Promise<string> {
   const supabase = getSupabase();
   const year = new Date().getFullYear();
-  const { data, error } = await supabase.rpc('get_next_voucher_number', {
-    p_prefix: prefix,
-    p_year: year,
-  });
-  if (error) { console.error('Error getting voucher number:', error); throw error; }
-  return data as string;
+  const expectedPrefix = `${prefix}-${year}-`;
+
+  const voucherTypeMap: Record<string, string> = {
+    SAL: 'sales',
+    PUR: 'purchase',
+    PAY: 'payment',
+    RCP: 'receipt',
+    EXP: 'expense',
+  };
+  const voucherType = voucherTypeMap[prefix.toUpperCase()];
+
+  try {
+    let q = supabase
+      .from('vouchers')
+      .select('voucher_number, created_at')
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (voucherType) {
+      q = q.eq('voucher_type', voucherType);
+    }
+    if (businessEntityId) {
+      q = q.eq('business_entity_id', businessEntityId);
+    }
+
+    const { data, error } = await q;
+    if (error) {
+      console.warn('Error fetching vouchers for next number:', error.message);
+      return `${prefix}-${year}-0001`;
+    }
+
+    if (!data || data.length === 0) {
+      return `${prefix}-${year}-0001`;
+    }
+
+    // 1. Scan for standard format PREFIX-YYYY-XXXX
+    let maxStandardSeq = 0;
+    let foundStandard = false;
+
+    for (const v of data) {
+      const vNum = (v.voucher_number || '').trim();
+      if (vNum.startsWith(expectedPrefix)) {
+        foundStandard = true;
+        const numPart = parseInt(vNum.slice(expectedPrefix.length), 10);
+        if (!isNaN(numPart) && numPart > maxStandardSeq) {
+          maxStandardSeq = numPart;
+        }
+      }
+    }
+
+    if (foundStandard) {
+      const nextSeq = (maxStandardSeq + 1).toString().padStart(4, '0');
+      return `${expectedPrefix}${nextSeq}`;
+    }
+
+    // 2. If not standard format, inspect the most recently added voucher
+    // e.g. "D74" -> "D75", "INV-099" -> "INV-100", etc.
+    const latestVoucher = data[0];
+    if (latestVoucher?.voucher_number) {
+      const trimmed = latestVoucher.voucher_number.trim();
+      const match = trimmed.match(/^(.*?)(\d+)$/);
+      if (match) {
+        const textPrefix = match[1];
+        const numStr = match[2];
+        const nextNum = (parseInt(numStr, 10) + 1).toString().padStart(numStr.length, '0');
+        return `${textPrefix}${nextNum}`;
+      }
+    }
+
+    return `${prefix}-${year}-0001`;
+  } catch (err) {
+    console.warn('Error computing next voucher number:', err);
+    return `${prefix}-${year}-0001`;
+  }
 }
 
 export async function insertVoucher(voucher: Omit<Voucher, 'id' | 'created_at' | 'lines'> & { lines: Omit<VoucherLine, 'id' | 'voucher_id' | 'created_at'>[] }): Promise<string> {
@@ -177,10 +268,29 @@ export async function insertVoucher(voucher: Omit<Voucher, 'id' | 'created_at' |
   }));
 
   // All formal vouchers must be posted by the database transaction.
-  const { data: rpcVoucherId, error: rpcErr } = await supabase.rpc('post_voucher_atomic', {
+  let { data: rpcVoucherId, error: rpcErr } = await supabase.rpc('post_voucher_atomic', {
     p_voucher: voucherRow,
     p_lines: lineRows,
   });
+
+  // If a legacy database constraint chk_vouchers_math (<= 0.05) rejects round-off, retry with exact sum
+  if (rpcErr && rpcErr.message && rpcErr.message.includes('chk_vouchers_math')) {
+    console.warn('Voucher post triggered strict math constraint; retrying with unrounded sum');
+    const exactTotal = Math.round((voucher.subtotal + voucher.tax_amount) * 100) / 100;
+    const adjustedDue = Math.max(0, Math.round((exactTotal - voucher.paid_amount) * 100) / 100);
+    const retryRow = {
+      ...voucherRow,
+      total_amount: exactTotal,
+      balance_due: adjustedDue,
+      payment_status: adjustedDue <= 0 ? 'paid' : voucher.paid_amount > 0 ? 'partial' : 'unpaid',
+    };
+    const retryRes = await supabase.rpc('post_voucher_atomic', {
+      p_voucher: retryRow,
+      p_lines: lineRows,
+    });
+    rpcVoucherId = retryRes.data;
+    rpcErr = retryRes.error;
+  }
 
   if (!rpcErr && rpcVoucherId) {
     return rpcVoucherId as string;

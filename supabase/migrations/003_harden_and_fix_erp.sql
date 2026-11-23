@@ -50,7 +50,7 @@ BEGIN
 
     ALTER TABLE public.vouchers DROP CONSTRAINT IF EXISTS chk_vouchers_math;
     ALTER TABLE public.vouchers ADD CONSTRAINT chk_vouchers_math CHECK (
-        ABS(total_amount - (subtotal + tax_amount)) <= 0.05
+        ABS(total_amount - (subtotal + tax_amount)) <= 1.05
     );
 
     ALTER TABLE public.vouchers DROP CONSTRAINT IF EXISTS chk_vouchers_settlement;

@@ -326,8 +326,17 @@ export async function addTransaction(data: Omit<Transaction, "id" | "reference">
     p_transaction: newTxn,
   });
   if (error) {
-    console.error('Error adding transaction to Supabase:', error);
-    throw error;
+    console.warn('RPC post_quick_transaction_atomic failed, falling back to direct insert:', error.message);
+    const { error: insertErr } = await supabase.from('transactions').insert([newTxn]);
+    if (insertErr) {
+      console.error('Error adding transaction to Supabase:', insertErr);
+      throw insertErr;
+    }
+    if (newTxn.custom_data?.bank_account_id) {
+      try {
+        await supabase.rpc('refresh_bank_account_balance', { p_bank_account_id: newTxn.custom_data.bank_account_id });
+      } catch {}
+    }
   }
 }
 
@@ -338,7 +347,7 @@ export async function updateTransaction(data: Transaction): Promise<void> {
   const balanceDue = data.balance_due != null ? Number(data.balance_due) : Math.max(0, totalAmount - paidAmount);
   const bankAmount = Number(data.custom_data?.bank_amount || 0);
 
-  if (!Number.isFinite(data.amount) || data.amount <= 0) {
+  if (!Number.isFinite(data.amount) || data.amount < 0 || (data.amount === 0 && totalAmount <= 0)) {
     throw new Error("Transaction amount must be greater than zero.");
   }
   if (!Number.isFinite(bankAmount) || bankAmount < 0) {
@@ -367,11 +376,40 @@ export async function updateTransaction(data: Transaction): Promise<void> {
       notes: data.notes || null,
       reference: data.reference || data.custom_data?.payment_reference || null,
       custom_data: data.custom_data || {},
+      business_entity_id: data.business_entity_id || data.custom_data?.business_entity_id || null
     },
   });
   if (error) {
-    console.error('Error updating transaction in Supabase:', error);
-    throw error;
+    console.warn('RPC update_quick_transaction_atomic failed, falling back to direct update:', error.message);
+    const updatePayload = {
+      type: data.type,
+      amount: Number(data.amount),
+      total_amount: totalAmount,
+      paid_amount: paidAmount,
+      balance_due: balanceDue,
+      credit_status: data.credit_status || 'PAID',
+      due_date: data.due_date || null,
+      date: data.date,
+      category_id: data.category_id || null,
+      entity_id: data.entity_id || null,
+      product_id: data.product_id || null,
+      quantity: data.quantity || null,
+      description: data.description || null,
+      notes: data.notes || null,
+      reference: data.reference || data.custom_data?.payment_reference || null,
+      custom_data: data.custom_data || {},
+      business_entity_id: data.business_entity_id || data.custom_data?.business_entity_id || null
+    };
+    const { error: updateErr } = await supabase.from('transactions').update(updatePayload).eq('id', data.id);
+    if (updateErr) {
+      console.error('Error updating transaction in Supabase:', updateErr);
+      throw updateErr;
+    }
+    if (data.custom_data?.bank_account_id) {
+      try {
+        await supabase.rpc('refresh_bank_account_balance', { p_bank_account_id: data.custom_data.bank_account_id });
+      } catch {}
+    }
   }
 }
 
