@@ -169,10 +169,13 @@ export function ReceiptVoucher() {
   const handleCancel = async (v: Voucher) => {
     if (!window.confirm(`Cancel receipt voucher ${v.voucher_number}?`)) return;
     try {
+      setVouchers((prev) => prev.map((item) => (item.id === v.id ? { ...item, status: "cancelled" } : item)));
       await cancelVoucher(v.id);
       triggerRefresh();
+      await loadData();
     } catch (err: any) {
       alert("Error: " + err.message);
+      await loadData();
     }
   };
 

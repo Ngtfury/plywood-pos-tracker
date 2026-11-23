@@ -307,6 +307,56 @@ export function formatVoucherReference(meta: VoucherMetadata): string | null {
   });
 }
 
+/**
+ * Pure function to compute the next voucher sequence.
+ * 1. Checks if any existing vouchers match the standard PREFIX-YYYY-XXXX format.
+ * 2. If not, inspects the latest voucher to increment (e.g. "D74" -> "D75", "INV-099" -> "INV-100").
+ * 3. Fallback to PREFIX-YYYY-0001.
+ */
+export function computeNextVoucherNumber(
+  prefix: string,
+  existingVouchers: { voucher_number?: string | null }[],
+  year: number = new Date().getFullYear()
+): string {
+  const expectedPrefix = `${prefix}-${year}-`;
+  if (!existingVouchers || existingVouchers.length === 0) {
+    return `${expectedPrefix}0001`;
+  }
+
+  let maxStandardSeq = 0;
+  let foundStandard = false;
+
+  for (const v of existingVouchers) {
+    const vNum = (v.voucher_number || '').trim();
+    if (vNum.startsWith(expectedPrefix)) {
+      foundStandard = true;
+      const numPart = parseInt(vNum.slice(expectedPrefix.length), 10);
+      if (!isNaN(numPart) && numPart > maxStandardSeq) {
+        maxStandardSeq = numPart;
+      }
+    }
+  }
+
+  if (foundStandard) {
+    const nextSeq = (maxStandardSeq + 1).toString().padStart(4, '0');
+    return `${expectedPrefix}${nextSeq}`;
+  }
+
+  const latestVoucher = existingVouchers[0];
+  if (latestVoucher?.voucher_number) {
+    const trimmed = latestVoucher.voucher_number.trim();
+    const match = trimmed.match(/^(.*?)(\d+)$/);
+    if (match) {
+      const textPrefix = match[1];
+      const numStr = match[2];
+      const nextNum = (parseInt(numStr, 10) + 1).toString().padStart(numStr.length, '0');
+      return `${textPrefix}${nextNum}`;
+    }
+  }
+
+  return `${expectedPrefix}0001`;
+}
+
 export function numberToIndianWords(amount: number): string {
   if (amount === 0) return 'INR Zero Only';
   const units = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
@@ -376,7 +426,11 @@ export interface Voucher {
   created_at: string;
   // joined
   business_entity_name?: string;
+  business_entity_gstin?: string;
+  business_entity_address?: string;
   party_entity_name?: string;
+  party_entity_gstin?: string;
+  party_entity_address?: string;
   party_entity_type?: string;
   bank_name?: string;
   account_no?: string;

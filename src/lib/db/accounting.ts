@@ -10,7 +10,7 @@ import type {
   Account, Voucher, VoucherLine, JournalEntry,
   SalaryRecord, Employee, Partner, BankAccount,
 } from './erp';
-import { parseVoucherReference } from './erp';
+import { parseVoucherReference, computeNextVoucherNumber } from './erp';
 
 // ---- Accounts (Chart of Accounts) ----
 
@@ -126,7 +126,11 @@ export async function getVoucherWithLines(voucherId: string): Promise<Voucher | 
   return {
     ...r,
     business_entity_name: r.business_entities?.name ?? undefined,
+    business_entity_gstin: r.business_entities?.gstin ?? undefined,
+    business_entity_address: r.business_entities?.address ?? undefined,
     party_entity_name: r.entities?.name ?? undefined,
+    party_entity_gstin: r.entities?.gstin ?? undefined,
+    party_entity_address: r.entities?.address ?? undefined,
     party_entity_type: r.entities?.type ?? undefined,
     bank_name: r.bank_accounts?.bank_name ?? undefined,
     account_no: r.bank_accounts?.account_no ?? undefined,
@@ -148,7 +152,6 @@ export async function getVoucherWithLines(voucherId: string): Promise<Voucher | 
 export async function getNextVoucherNumber(prefix: string, businessEntityId?: string): Promise<string> {
   const supabase = getSupabase();
   const year = new Date().getFullYear();
-  const expectedPrefix = `${prefix}-${year}-`;
 
   const voucherTypeMap: Record<string, string> = {
     SAL: 'sales',
@@ -179,45 +182,7 @@ export async function getNextVoucherNumber(prefix: string, businessEntityId?: st
       return `${prefix}-${year}-0001`;
     }
 
-    if (!data || data.length === 0) {
-      return `${prefix}-${year}-0001`;
-    }
-
-    // 1. Scan for standard format PREFIX-YYYY-XXXX
-    let maxStandardSeq = 0;
-    let foundStandard = false;
-
-    for (const v of data) {
-      const vNum = (v.voucher_number || '').trim();
-      if (vNum.startsWith(expectedPrefix)) {
-        foundStandard = true;
-        const numPart = parseInt(vNum.slice(expectedPrefix.length), 10);
-        if (!isNaN(numPart) && numPart > maxStandardSeq) {
-          maxStandardSeq = numPart;
-        }
-      }
-    }
-
-    if (foundStandard) {
-      const nextSeq = (maxStandardSeq + 1).toString().padStart(4, '0');
-      return `${expectedPrefix}${nextSeq}`;
-    }
-
-    // 2. If not standard format, inspect the most recently added voucher
-    // e.g. "D74" -> "D75", "INV-099" -> "INV-100", etc.
-    const latestVoucher = data[0];
-    if (latestVoucher?.voucher_number) {
-      const trimmed = latestVoucher.voucher_number.trim();
-      const match = trimmed.match(/^(.*?)(\d+)$/);
-      if (match) {
-        const textPrefix = match[1];
-        const numStr = match[2];
-        const nextNum = (parseInt(numStr, 10) + 1).toString().padStart(numStr.length, '0');
-        return `${textPrefix}${nextNum}`;
-      }
-    }
-
-    return `${prefix}-${year}-0001`;
+    return computeNextVoucherNumber(prefix, data || [], year);
   } catch (err) {
     console.warn('Error computing next voucher number:', err);
     return `${prefix}-${year}-0001`;

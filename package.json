@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test:licensing": "node --experimental-strip-types src/licensing/__tests__/licensing-scenarios.test.ts",
-    "test:erp": "node --experimental-strip-types src/__tests__/erp-database-audit.test.ts"
+    "test:erp": "node --experimental-strip-types src/__tests__/erp-database-audit.test.ts",
+    "test:sales": "node --experimental-strip-types src/__tests__/sales-voucher-e2e.test.ts",
+    "test:all": "npm run test:licensing && npm run test:erp && npm run test:sales"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",

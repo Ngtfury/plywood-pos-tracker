@@ -303,7 +303,10 @@ export function SalesVoucher() {
   };
 
   const addLine = () => setLines((prev) => [...prev, emptyLine()]);
-  const removeLine = (id: string) => setLines((prev) => prev.filter((l) => l.id !== id));
+  const removeLine = (id: string) => {
+    if (lines.length <= 1) return;
+    setLines((prev) => prev.filter((l) => l.id !== id));
+  };
 
   // Current Entities
   const selectedBiz = bizEntities.find((b) => b.id === bizEntityId);
@@ -408,7 +411,9 @@ export function SalesVoucher() {
   const handleSave = async (andPrint: boolean = false) => {
     if (!bizEntityId) return alert("Please select a business entity.");
     if (!customerId) return alert("Please select a customer.");
+    if (lines.length === 0) return alert("Please add at least one line item.");
     if (lines.some((l) => !l.product_id)) return alert("All line items must have a product selected.");
+    if (lines.some((l) => l.quantity <= 0)) return alert("Line item quantity must be greater than zero.");
 
     setSaving(true);
     try {
@@ -495,8 +500,17 @@ export function SalesVoucher() {
 
   const handleCancel = async (id: string) => {
     if (!confirm("Cancel this voucher?")) return;
-    await cancelVoucher(id);
-    triggerRefresh();
+    try {
+      setVouchers((prev) =>
+        prev.map((v) => (v.id === id ? { ...v, status: "cancelled" } : v))
+      );
+      await cancelVoucher(id);
+      triggerRefresh();
+      await loadVouchers();
+    } catch (err: any) {
+      alert("Error cancelling voucher: " + (err?.message || String(err)));
+      await loadVouchers();
+    }
   };
 
   const handleOpenPrint = async (voucherId: string) => {
@@ -1417,9 +1431,9 @@ export function SalesVoucher() {
                   {/* Seller Header */}
                   <div className="p-2 space-y-0.5">
                     <div className="font-bold text-sm tracking-wide">{printVoucher.business_entity_name || "DELUXE PLY & BOARDS"}</div>
-                    <div className="text-[11px] text-gray-700">Peruvangal Padi, Asamannoor, Metala, Ernakulam, Kerala</div>
-                    <div className="text-[11px] font-mono">GSTIN/UIN: 32AAYFD0732E1ZN</div>
-                    <div className="text-[11px]">State Name: Kerala, Code: 32</div>
+                    <div className="text-[11px] text-gray-700">{printVoucher.business_entity_address || "Peruvangal Padi, Asamannoor, Metala, Ernakulam, Kerala"}</div>
+                    <div className="text-[11px] font-mono">GSTIN/UIN: {printVoucher.business_entity_gstin || "32AAYFD0732E1ZN"}</div>
+                    <div className="text-[11px]">State Name: {printTaxSplit.sellerStateName || "Kerala"}, Code: {printTaxSplit.sellerStateCode || "32"}</div>
                   </div>
 
                   {/* Consignee (Ship to) */}
@@ -1433,7 +1447,7 @@ export function SalesVoucher() {
                     <div className="text-[11px]">
                       {printVoucher.shipping && !printVoucher.shipping.sameAsBuyer && printVoucher.shipping.address
                         ? printVoucher.shipping.address
-                        : "Buyer Destination Address"}
+                        : printVoucher.party_entity_address || "Buyer Destination Address"}
                     </div>
                     {printVoucher.shipping?.gstin && (
                       <div className="text-[11px] font-mono">GSTIN/UIN: {printVoucher.shipping.gstin}</div>
@@ -1449,7 +1463,10 @@ export function SalesVoucher() {
                   <div className="p-2 space-y-0.5">
                     <div className="font-semibold text-[11px] text-gray-600 uppercase">Buyer (Bill to)</div>
                     <div className="font-bold">{printVoucher.party_entity_name || "—"}</div>
-                    <div className="text-[11px]">Customer Billing Address as registered</div>
+                    <div className="text-[11px]">{printVoucher.party_entity_address || "Customer Billing Address as registered"}</div>
+                    {printVoucher.party_entity_gstin && (
+                      <div className="text-[11px] font-mono">GSTIN/UIN: {printVoucher.party_entity_gstin}</div>
+                    )}
                     <div className="text-[11px]">State Name: {printTaxSplit.placeOfSupplyName}, Code: {printTaxSplit.placeOfSupplyCode}</div>
                   </div>
                 </div>
