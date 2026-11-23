@@ -199,10 +199,22 @@ export function Transactions() {
                     ₹{(txn.type === "IN" ? (txn.total_amount || txn.amount) : txn.amount).toLocaleString()}
                   </TableCell>
                   <TableCell>
-                    {txn.type === "IN" ? (() => {
+                    {(() => {
                       const payment = txn.custom_data || {};
-                      const total = Number(txn.total_amount || txn.amount);
-                      const cash = payment.cash_amount != null ? Number(payment.cash_amount) : total;
+                      const isCreditTxn = (txn.balance_due != null && txn.balance_due > 0) || (txn.total_amount != null && txn.paid_amount != null);
+                      const actualPaid = txn.paid_amount != null ? Number(txn.paid_amount) : Number(txn.amount);
+                      
+                      if (isCreditTxn && actualPaid === 0) {
+                        return (
+                          <div className="text-xs text-amber-500 font-medium">
+                            Full Credit (₹0 Upfront)
+                          </div>
+                        );
+                      }
+
+                      const cash = payment.cash_amount != null 
+                        ? Number(payment.cash_amount) 
+                        : (payment.bank_amount ? Math.max(0, actualPaid - Number(payment.bank_amount)) : actualPaid);
                       const bank = payment.bank_amount != null ? Number(payment.bank_amount) : 0;
                       const bankAccount = bankAccounts.find((account) => account.id === payment.bank_account_id);
                       const paymentMode = payment.payment_method === "cash_only"
@@ -214,9 +226,21 @@ export function Transactions() {
                             : bank > 0 && cash > 0
                               ? "Cash + Bank Transfer"
                               : bank > 0 ? "Bank Transfer Only" : "Cash Only";
+
+                      if (txn.type !== "IN" && !payment.payment_method && bank === 0) {
+                        return <span className="text-xs text-muted-foreground">—</span>;
+                      }
+
                       return (
                         <div className="text-xs space-y-0.5 min-w-44">
-                          <div className="font-medium">{paymentMode}</div>
+                          <div className="font-medium flex items-center gap-1.5">
+                            <span>{paymentMode}</span>
+                            {isCreditTxn && (
+                              <span className="text-[10px] text-muted-foreground px-1 py-0.2 rounded bg-muted/80">
+                                Upfront
+                              </span>
+                            )}
+                          </div>
                           <div>Cash: ₹{cash.toLocaleString()}</div>
                           <div>Bank Transfer: ₹{bank.toLocaleString()}</div>
                           {bank > 0 && (
@@ -229,9 +253,7 @@ export function Transactions() {
                           )}
                         </div>
                       );
-                    })() : (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    )}
+                    })()}
                   </TableCell>
                   <TableCell>
                     {txn.balance_due != null && txn.balance_due > 0 ? (

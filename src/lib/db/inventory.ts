@@ -240,6 +240,103 @@ export async function getStockBalances(
   }));
 }
 
+export async function updateStockBalance(params: {
+  stockBalanceId: string;
+  businessEntityId: string;
+  productId: string;
+  variantId: string | null;
+  newQtySheets: number;
+  newQtySqft: number;
+  newQtyPieces: number;
+  newQtyOther: number;
+  oldValues?: Partial<StockBalance> | null;
+  narration?: string;
+}): Promise<void> {
+  const supabase = getSupabase();
+
+  if (
+    params.newQtySheets < 0 ||
+    params.newQtySqft < 0 ||
+    params.newQtyPieces < 0 ||
+    params.newQtyOther < 0
+  ) {
+    throw new Error('Stock balance quantities cannot be negative.');
+  }
+
+  // Calculate delta from old values to record an audit stock movement
+  const oldSheets = Number(params.oldValues?.qty_sheets || 0);
+  const oldSqft = Number(params.oldValues?.qty_sqft || 0);
+  const oldPieces = Number(params.oldValues?.qty_pieces || 0);
+  const oldOther = Number(params.oldValues?.qty_other || 0);
+
+  const deltaSheets = params.newQtySheets - oldSheets;
+  const deltaSqft = params.newQtySqft - oldSqft;
+  const deltaPieces = params.newQtyPieces - oldPieces;
+  const deltaOther = params.newQtyOther - oldOther;
+
+  const hasDelta = deltaSheets !== 0 || deltaSqft !== 0 || deltaPieces !== 0 || deltaOther !== 0;
+
+  // 1. Update the stock balance record directly
+  const { error: updateErr } = await supabase
+    .from('stock_balances')
+    .update({
+      qty_sheets: params.newQtySheets,
+      qty_sqft: params.newQtySqft,
+      qty_pieces: params.newQtyPieces,
+      qty_other: params.newQtyOther,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', params.stockBalanceId);
+
+  if (updateErr) {
+    console.error('Error updating stock balance:', updateErr);
+    throw updateErr;
+  }
+
+  // 2. If there is a change, record an audit stock movement
+  if (hasDelta) {
+    const isIncrease = deltaSheets >= 0 && deltaSqft >= 0 && deltaPieces >= 0 && deltaOther >= 0;
+    const isDecrease = deltaSheets <= 0 && deltaSqft <= 0 && deltaPieces <= 0 && deltaOther <= 0;
+    const movementType = isIncrease ? 'adjustment_in' : (isDecrease ? 'adjustment_out' : 'adjustment_in');
+    
+    try {
+      const moveId = `sm_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      await supabase.from('stock_movements').insert([{
+        id: moveId,
+        business_entity_id: params.businessEntityId,
+        product_id: params.productId,
+        variant_id: params.variantId || null,
+        movement_type: movementType,
+        qty_sheets: Math.abs(deltaSheets),
+        qty_sqft: Math.abs(deltaSqft),
+        qty_pieces: Math.abs(deltaPieces),
+        qty_other: Math.abs(deltaOther),
+        reference_id: params.stockBalanceId,
+        reference_type: 'manual_balance_edit',
+        narration: params.narration || 'Manual inventory edit / physical count correction',
+        movement_date: new Date().toISOString(),
+      }]);
+    } catch (moveErr) {
+      console.warn('Non-blocking: could not insert stock movement record:', moveErr);
+    }
+  }
+
+  // 3. Record audit log
+  await recordAuditLog({
+    entity_type: 'stock_balance',
+    record_id: params.stockBalanceId,
+    old_values: params.oldValues || null,
+    new_values: {
+      qty_sheets: params.newQtySheets,
+      qty_sqft: params.newQtySqft,
+      qty_pieces: params.newQtyPieces,
+      qty_other: params.newQtyOther,
+      narration: params.narration,
+    },
+    action: 'UPDATE',
+  });
+}
+
 // ---- Stock Movements ----
 
 export async function getStockMovements(params: {

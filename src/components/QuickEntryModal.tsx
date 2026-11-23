@@ -116,11 +116,16 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
       setPaymentReference(payment.payment_reference || initialTransaction?.reference || "");
       setValidationError("");
       if (initialTransaction) {
-        setPaymentMode(payment.payment_method || (Number(payment.bank_amount) > 0 ? "bank_transfer_only" : "cash_only"));
-        setIsCredit((initialTransaction.balance_due || 0) > 0);
+        const isCred = (initialTransaction.balance_due || 0) > 0 || initialTransaction.total_amount != null;
+        setIsCredit(isCred);
         setTotalBillAmount(String(initialTransaction.total_amount ?? initialTransaction.amount));
         setPaidNowAmount(String(initialTransaction.paid_amount ?? initialTransaction.amount));
         setDueDate(initialTransaction.due_date ? initialTransaction.due_date.slice(0, 10) : "");
+        setPaymentMode(payment.payment_method || (Number(payment.bank_amount) > 0 ? "bank_transfer_only" : "cash_only"));
+        setCashAmount(String(payment.cash_amount ?? (isCred ? (initialTransaction.paid_amount ?? 0) : initialTransaction.amount)));
+        setBankAmount(String(payment.bank_amount ?? 0));
+        setBankAccountId(payment.bank_account_id || "");
+        setPaymentReference(payment.payment_reference || initialTransaction?.reference || "");
       } else {
         setPaymentMode("cash_only");
       }
@@ -128,17 +133,17 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
   }, [isOpen, type, refreshTrigger, initialTransaction]);
 
   useEffect(() => {
-    if (isCredit) return;
+    const targetStr = isCredit ? paidNowAmount : amount;
     if (paymentMode === "cash_only") {
-      setCashAmount(amount);
+      setCashAmount(targetStr);
       setBankAmount("0");
       setBankAccountId("");
       setPaymentReference("");
     } else if (paymentMode === "bank_transfer_only") {
       setCashAmount("0");
-      setBankAmount(amount);
+      setBankAmount(targetStr);
     }
-  }, [amount, isCredit, paymentMode, type]);
+  }, [amount, paidNowAmount, isCredit, paymentMode]);
 
   const calcTotal = isCredit ? (parseFloat(totalBillAmount) || 0) : (parseFloat(amount) || 0);
   const calcPaid = isCredit ? (parseFloat(paidNowAmount) || 0) : calcTotal;
@@ -146,6 +151,7 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
   const receivedCash = parseFloat(cashAmount) || 0;
   const receivedBank = parseFloat(bankAmount) || 0;
   const receivedBreakdownTotal = receivedCash + receivedBank;
+  const activeAmount = isCredit ? calcPaid : (parseFloat(amount) || 0);
   const selectedBankAccount = bankAccounts.find((bank) => bank.id === bankAccountId);
 
   // Live balance calculation
@@ -174,13 +180,14 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
       setValidationError("Amount must be greater than zero.");
       return;
     }
-    if (isCredit && (!totalBillAmount || entityId === "none")) {
-      setValidationError("Enter the bill amount and select an entity.");
+    if (isCredit && (!totalBillAmount || parseFloat(totalBillAmount) <= 0 || entityId === "none")) {
+      setValidationError("Enter a valid bill amount and select an entity.");
       return;
     }
-    if (!isCredit) {
-      if (Math.abs(receivedBreakdownTotal - (parseFloat(amount) || 0)) > 0.005) {
-        alert("Cash Amount and Bank Transfer Amount must equal Total Amount Received.");
+
+    if (activeAmount > 0) {
+      if (Math.abs(receivedBreakdownTotal - activeAmount) > 0.005) {
+        alert(`Cash Amount and Bank Transfer Amount must equal Total Amount ${type === "IN" ? "Received" : "Paid"} (₹${activeAmount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}).`);
         return;
       }
       if (receivedBank > 0 && !bankAccountId) {
@@ -218,7 +225,14 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
           quantity: null,
           description: null,
           notes,
-          custom_data: customData,
+          custom_data: {
+            ...customData,
+            payment_method: paid > 0 ? paymentMode : null,
+            cash_amount: paid > 0 ? receivedCash : 0,
+            bank_amount: paid > 0 ? receivedBank : 0,
+            bank_account_id: (paid > 0 && receivedBank > 0) ? bankAccountId : null,
+            payment_reference: (paid > 0 && paymentReference) ? paymentReference : null,
+          },
         };
         if (initialTransaction) {
           await updateTransaction({ ...initialTransaction, ...transaction } as Transaction);
@@ -271,14 +285,154 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
   const isFormValid = () => {
     if (!categoryId) return false;
     if (isCredit) {
-      return (
-        parseFloat(totalBillAmount) > 0 &&
-        parseFloat(paidNowAmount) >= 0 &&
-        entityId !== "none"
-      );
+      const total = parseFloat(totalBillAmount) || 0;
+      const paid = parseFloat(paidNowAmount) || 0;
+      if (total <= 0 || entityId === "none") return false;
+      if (paid < 0 || paid > total) return false;
+      if (paid > 0) {
+        if (Math.abs(receivedBreakdownTotal - paid) > 0.005) return false;
+        if (receivedBank > 0 && !bankAccountId) return false;
+        if (type === "OUT" && receivedBank > Number(selectedBankAccount?.current_balance || 0)) return false;
+      }
+      return true;
     }
-    return parseFloat(amount) > 0;
+    const amt = parseFloat(amount) || 0;
+    if (amt <= 0) return false;
+    if (Math.abs(receivedBreakdownTotal - amt) > 0.005) return false;
+    if (receivedBank > 0 && !bankAccountId) return false;
+    if (type === "OUT" && receivedBank > Number(selectedBankAccount?.current_balance || 0)) return false;
+    return true;
   };
+
+  const renderPaymentModeSection = (targetAmount: number, isUpfront = false) => (
+    <div className={`rounded-lg border p-3.5 space-y-3 ${
+      type === "IN" 
+        ? "border-emerald-500/30 bg-emerald-500/5" 
+        : "border-rose-500/30 bg-rose-500/5"
+    }`}>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label className="font-semibold">
+            {isUpfront 
+              ? (type === "IN" ? "Upfront Receipt Mode" : "Upfront Payment Mode") 
+              : (type === "IN" ? "Receipt Mode" : "Payment Mode")}
+          </Label>
+          {isUpfront && targetAmount > 0 && (
+            <span className="text-xs text-muted-foreground font-medium">
+              for ₹{targetAmount.toLocaleString("en-IN", { minimumFractionDigits: 2 })} paid upfront
+            </span>
+          )}
+        </div>
+        <Select 
+          value={paymentMode} 
+          onValueChange={(value) => {
+            const mode = value as typeof paymentMode;
+            setPaymentMode(mode);
+            if (mode === "cash_only") {
+              setCashAmount(String(targetAmount));
+              setBankAmount("0");
+              setBankAccountId("");
+              setPaymentReference("");
+            } else if (mode === "bank_transfer_only") {
+              setCashAmount("0");
+              setBankAmount(String(targetAmount));
+            } else if (mode === "cash_and_bank") {
+              setCashAmount(String(targetAmount));
+              setBankAmount("0");
+            }
+          }}
+        >
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="cash_only">Cash Only</SelectItem>
+            <SelectItem value="bank_transfer_only">Bank Transfer Only</SelectItem>
+            <SelectItem value="cash_and_bank">Cash + Bank Transfer</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {paymentMode !== "bank_transfer_only" && (
+        <div className="space-y-2">
+          <Label htmlFor="cashAmount">{type === "IN" ? "Cash Amount (₹)" : "Cash Paid (₹)"}</Label>
+          <Input
+            id="cashAmount"
+            type="number"
+            min="0"
+            step="0.01"
+            value={cashAmount}
+            readOnly={paymentMode === "cash_only"}
+            onChange={(e) => setCashAmount(e.currentTarget.value)}
+          />
+        </div>
+      )}
+      {paymentMode !== "cash_only" && (
+        <div className="space-y-2">
+          <Label htmlFor="bankAmount">{type === "IN" ? "Bank Transfer Amount (₹)" : "Bank Paid (₹)"}</Label>
+          <Input
+            id="bankAmount"
+            type="number"
+            min="0"
+            step="0.01"
+            value={bankAmount}
+            readOnly={paymentMode === "bank_transfer_only"}
+            onChange={(e) => setBankAmount(e.currentTarget.value)}
+          />
+        </div>
+      )}
+      {receivedBank > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label>{type === "IN" ? "Deposit Bank Account *" : "Bank Account *"}</Label>
+            <Select value={bankAccountId} onValueChange={handleBankAccountChange}>
+              <SelectTrigger>
+                <SelectValue placeholder={`Select ${type === "IN" ? "receiving" : "paying"} bank`} />
+              </SelectTrigger>
+              <SelectContent>
+                {bankAccounts.filter((bank) => bank.is_active).map((bank) => (
+                  <SelectItem key={bank.id} value={bank.id}>
+                    {bank.bank_name} ({bank.account_no})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {bankAccountId && (
+            <div className="rounded-md border bg-background/70 p-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Available Balance</span>
+                <span className="font-semibold">
+                  ₹{Number(selectedBankAccount?.current_balance || 0)
+                    .toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+              {type === "OUT" && (
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-muted-foreground">Balance After Expense</span>
+                  <span className="font-semibold text-emerald-400">
+                    ₹{(Number(selectedBankAccount?.current_balance || 0) - receivedBank)
+                      .toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+              )}
+              {validationError && <p className="text-sm text-rose-400">{validationError}</p>}
+            </div>
+          )}
+          <div className="space-y-2">
+            <Label htmlFor="paymentReference">Bank Reference / UTR (Optional)</Label>
+            <Input
+              id="paymentReference"
+              placeholder="e.g. UTR12345678"
+              value={paymentReference}
+              onChange={(e) => setPaymentReference(e.currentTarget.value)}
+            />
+          </div>
+        </div>
+      )}
+      <div className={`text-sm font-medium ${Math.abs(receivedBreakdownTotal - targetAmount) <= 0.005 ? "text-emerald-400" : "text-rose-400"}`}>
+        Allocated: ₹{receivedBreakdownTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })} / {type === "IN" ? (isUpfront ? "Received Upfront" : "Received") : (isUpfront ? "Paid Upfront" : "Paid")}: ₹{targetAmount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+      </div>
+    </div>
+  );
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -386,101 +540,7 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
                   </Select>
                 </div>
               </div>
-              {!isCredit && (
-                <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3.5 space-y-3">
-                  <div className="space-y-2">
-                    <Label>{type === "IN" ? "Receipt Mode" : "Payment Mode"}</Label>
-                    <Select value={paymentMode} onValueChange={(value) => setPaymentMode(value as typeof paymentMode)}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="cash_only">Cash Only</SelectItem>
-                        <SelectItem value="bank_transfer_only">Bank Transfer Only</SelectItem>
-                        <SelectItem value="cash_and_bank">Cash + Bank Transfer</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {paymentMode !== "bank_transfer_only" && (
-                    <div className="space-y-2">
-                      <Label htmlFor="cashAmount">{type === "IN" ? "Cash Amount (₹)" : "Cash Paid (₹)"}</Label>
-                      <Input
-                        id="cashAmount"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={cashAmount}
-                        readOnly={paymentMode === "cash_only"}
-                        onChange={(e) => setCashAmount(e.currentTarget.value)}
-                      />
-                    </div>
-                  )}
-                  {paymentMode !== "cash_only" && (
-                    <div className="space-y-2">
-                      <Label htmlFor="bankAmount">{type === "IN" ? "Bank Transfer Amount (₹)" : "Bank Paid (₹)"}</Label>
-                      <Input
-                        id="bankAmount"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={bankAmount}
-                        readOnly={paymentMode === "bank_transfer_only"}
-                        onChange={(e) => setBankAmount(e.currentTarget.value)}
-                      />
-                    </div>
-                  )}
-                {receivedBank > 0 && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label>{type === "IN" ? "Deposit Bank Account *" : "Bank Account *"}</Label>
-                      <Select value={bankAccountId} onValueChange={handleBankAccountChange}>
-                        <SelectTrigger>
-                          <SelectValue placeholder={`Select ${type === "IN" ? "receiving" : "paying"} bank`} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {bankAccounts.filter((bank) => bank.is_active).map((bank) => (
-                            <SelectItem key={bank.id} value={bank.id}>
-                              {bank.bank_name} ({bank.account_no})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    {bankAccountId && (
-                      <div className="rounded-md border bg-background/70 p-3 text-sm">
-                        <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">Available Balance</span>
-                          <span className="font-semibold">
-                            ₹{Number(selectedBankAccount?.current_balance || 0)
-                              .toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-                          </span>
-                        </div>
-                        {type === "OUT" && (
-                          <div className="flex items-center justify-between mt-1">
-                            <span className="text-muted-foreground">Balance After Expense</span>
-                            <span className="font-semibold text-emerald-400">
-                              ₹{(Number(selectedBankAccount?.current_balance || 0) - receivedBank)
-                                .toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-                            </span>
-                          </div>
-                        )}
-                        {validationError && <p className="text-sm text-rose-400">{validationError}</p>}
-                      </div>
-                    )}
-                    <div className="space-y-2">
-                      <Label htmlFor="paymentReference">Bank Reference / UTR (Optional)</Label>
-                      <Input
-                        id="paymentReference"
-                        value={paymentReference}
-                        onChange={(e) => setPaymentReference(e.currentTarget.value)}
-                      />
-                    </div>
-                  </div>
-                )}
-                  <div className={`text-sm font-medium ${Math.abs(receivedBreakdownTotal - (parseFloat(amount) || 0)) <= 0.005 ? "text-emerald-400" : "text-rose-400"}`}>
-                    Allocated: ₹{receivedBreakdownTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })} / Received: ₹{(parseFloat(amount) || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-                  </div>
-                </div>
-              )}
+              {renderPaymentModeSection(parseFloat(amount) || 0, false)}
             </>
           ) : (
             <div className="p-3.5 rounded-lg border border-primary/30 bg-primary/5 space-y-4">
@@ -523,7 +583,7 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
                 <div>
                   <span className="text-muted-foreground">Remaining Credit Due: </span>
                   <span className="font-bold text-sm text-amber-500">
-                    ₹{calcBalanceDue.toLocaleString()}
+                    ₹{calcBalanceDue.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5">
@@ -566,6 +626,21 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
                   </Select>
                 </div>
               </div>
+
+              {/* Upfront Receipt / Payment Mode for Credit Partial Payments */}
+              {calcPaid > 0 ? (
+                renderPaymentModeSection(calcPaid, true)
+              ) : (
+                <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/20 p-3 text-xs text-muted-foreground flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 text-amber-500" />
+                    <span>100% Credit — No upfront {type === "IN" ? "cash or bank received" : "cash or bank paid"}.</span>
+                  </div>
+                  <span className="font-semibold text-amber-500 font-mono">
+                    ₹{calcTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })} Due
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
