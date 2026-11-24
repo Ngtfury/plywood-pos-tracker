@@ -843,20 +843,25 @@ export function Settings({ onDisconnect }: SettingsProps) {
                 )}
                 <span>
                   {schemaHealth.isFit 
-                    ? `Schema is fully up to date (${24 - schemaHealth.missingTables.length}/24 tables verified)` 
+                    ? `Schema is fully up to date (${schemaHealth.verifiedTablesCount || 26}/${schemaHealth.totalTables || 26} tables, ${schemaHealth.verifiedColumnsCount || 295}/${schemaHealth.totalColumns || 295} columns verified)` 
                     : `Schema requires attention: ${schemaHealth.summary}`}
                 </span>
               </div>
               {!schemaHealth.isFit && (
-                <div className="space-y-1 text-xs text-amber-200/80">
+                <div className="space-y-1.5 text-xs text-amber-200/90 pt-1">
+                  <div className="flex items-center gap-2 text-[11px] text-amber-300 font-mono">
+                    <span>Tables: {schemaHealth.verifiedTablesCount || 0}/{schemaHealth.totalTables || 26}</span>
+                    <span>•</span>
+                    <span>Columns: {schemaHealth.verifiedColumnsCount || 0}/{schemaHealth.totalColumns || 295}</span>
+                  </div>
                   {schemaHealth.missingTables.length > 0 && (
-                    <p><span className="font-semibold text-amber-300">Missing tables:</span> {schemaHealth.missingTables.join(', ')}</p>
+                    <p><span className="font-semibold text-amber-300">Missing tables ({schemaHealth.missingTables.length}):</span> {schemaHealth.missingTables.join(', ')}</p>
                   )}
                   {schemaHealth.missingColumns.length > 0 && (
-                    <p><span className="font-semibold text-amber-300">Missing columns:</span> {schemaHealth.missingColumns.join(', ')}</p>
+                    <p><span className="font-semibold text-amber-300">Missing columns ({schemaHealth.missingColumns.length}):</span> {schemaHealth.missingColumns.join(', ')}</p>
                   )}
                   {schemaHealth.missingFunctions.length > 0 && (
-                    <p><span className="font-semibold text-amber-300">Missing functions:</span> {schemaHealth.missingFunctions.join(', ')}</p>
+                    <p><span className="font-semibold text-amber-300">Missing functions ({schemaHealth.missingFunctions.length}):</span> {schemaHealth.missingFunctions.join(', ')}</p>
                   )}
                 </div>
               )}

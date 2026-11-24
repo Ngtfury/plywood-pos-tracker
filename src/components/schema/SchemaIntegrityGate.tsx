@@ -206,7 +206,7 @@ export function SchemaIntegrityGate({ children, onResetDatabase }: SchemaIntegri
         <p className="text-sm text-zinc-400 max-w-sm mb-4">
           {autoMigrating
             ? "Applying master schema and verifying enterprise accounting invariants."
-            : "Checking all 24 ERP tables, atomic functions, and double-entry ledgers."}
+            : "Checking all 26 ERP tables, columns, and atomic stored procedures."}
         </p>
         <IosSpinner size="md" className="text-emerald-500 mb-6" />
 
@@ -368,12 +368,17 @@ export function SchemaIntegrityGate({ children, onResetDatabase }: SchemaIntegri
               onClick={() => setShowDetails(!showDetails)}
               className="w-full flex items-center justify-between text-xs text-zinc-400 hover:text-zinc-200 py-1 cursor-pointer transition-colors"
             >
-              <span>View Missing Tables &amp; Functions ({totalMissing})</span>
+              <span>View Missing Tables, Columns &amp; Functions ({totalMissing})</span>
               {showDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             </button>
 
             {showDetails && health && (
               <div className="mt-2 p-3.5 rounded-2xl bg-zinc-950/80 border border-zinc-800/80 text-[11px] space-y-2 max-h-48 overflow-y-auto font-mono text-zinc-400">
+                <div className="text-[10px] text-zinc-500 pb-1 border-b border-zinc-800/60 flex items-center gap-2">
+                  <span>Verified: {health.verifiedTablesCount}/{health.totalTables} tables</span>
+                  <span>•</span>
+                  <span>{health.verifiedColumnsCount}/{health.totalColumns} columns</span>
+                </div>
                 {health.missingTables.length > 0 && (
                   <div>
                     <span className="text-amber-400 font-semibold">Missing Tables ({health.missingTables.length}):</span>
@@ -382,13 +387,13 @@ export function SchemaIntegrityGate({ children, onResetDatabase }: SchemaIntegri
                 )}
                 {health.missingColumns.length > 0 && (
                   <div>
-                    <span className="text-amber-400 font-semibold">Missing Columns:</span>
+                    <span className="text-amber-400 font-semibold">Missing Columns ({health.missingColumns.length}):</span>
                     <p className="text-zinc-300 mt-0.5">{health.missingColumns.join(", ")}</p>
                   </div>
                 )}
                 {health.missingFunctions.length > 0 && (
                   <div>
-                    <span className="text-amber-400 font-semibold">Missing Functions:</span>
+                    <span className="text-amber-400 font-semibold">Missing Functions ({health.missingFunctions.length}):</span>
                     <p className="text-zinc-300 mt-0.5">{health.missingFunctions.join(", ")}</p>
                   </div>
                 )}

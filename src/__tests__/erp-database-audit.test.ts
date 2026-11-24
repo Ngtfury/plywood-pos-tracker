@@ -240,13 +240,14 @@ function testMasterSchemaIntegrity() {
 
   const masterSqlContent = fs.readFileSync(masterSqlPath, 'utf8');
 
-  // Verify all 24 tables are in supabase.sql
+  // Verify all 26 tables are in supabase.sql
   const expectedTables = [
     'categories', 'entities', 'custom_fields', 'transactions', 'credit_payments',
     'business_entities', 'accounts', 'products', 'product_variants', 'employees',
     'partners', 'bank_accounts', 'stock_balances', 'stock_movements', 'production_entries',
     'vouchers', 'voucher_lines', 'journal_entries', 'journal_lines', 'salary_records',
-    'bank_statement_transactions', 'bank_reconciliation_matches', 'erp_settings', 'voucher_sequences'
+    'bank_statement_transactions', 'bank_reconciliation_matches', 'erp_settings', 'voucher_sequences',
+    'units_of_measurement', 'edit_audit_logs'
   ];
 
   let missingInMaster: string[] = [];
@@ -255,7 +256,30 @@ function testMasterSchemaIntegrity() {
       missingInMaster.push(tbl);
     }
   }
-  assert(missingInMaster.length === 0, 'Fix 14: supabase.sql contains CREATE TABLE IF NOT EXISTS for all 24 tables', missingInMaster.join(', '));
+  assert(missingInMaster.length === 0, 'Fix 14: supabase.sql contains CREATE TABLE IF NOT EXISTS for all 26 tables', missingInMaster.join(', '));
+
+  // Verify non-destructive ALTER TABLE ADD COLUMN IF NOT EXISTS for backward compatibility
+  assert(
+    masterSqlContent.includes('ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS salary_frequency') &&
+    masterSqlContent.includes('ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS payee_type') &&
+    masterSqlContent.includes('ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS booked_amount'),
+    'Fix 14: supabase.sql contains safe ALTER TABLE ADD COLUMN IF NOT EXISTS for salary_records (salary_frequency, payee_type, booked_amount)'
+  );
+
+  assert(
+    masterSqlContent.includes("NOTIFY pgrst, 'reload schema'"),
+    'Fix 14: supabase.sql reloads PostgREST schema cache immediately upon completion'
+  );
+
+  // Verify schemaSync.ts has all tables in ALL_REQUIRED_TABLES and MASTER_TABLE_COLUMNS
+  const schemaSyncContent = fs.readFileSync(schemaSyncTsPath, 'utf8');
+  assert(
+    schemaSyncContent.includes('MASTER_TABLE_COLUMNS') &&
+    schemaSyncContent.includes('salary_frequency') &&
+    schemaSyncContent.includes('units_of_measurement') &&
+    schemaSyncContent.includes('edit_audit_logs'),
+    'Fix 14: schemaSync.ts defines exhaustive column verification matrix including salary_records.salary_frequency'
+  );
 
   // Verify exec_sql RPC
   assert(

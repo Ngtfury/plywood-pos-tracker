@@ -451,95 +451,329 @@ CREATE TABLE IF NOT EXISTS public.edit_audit_logs (
 -- =========================================================================
 -- 3. SCHEMA HARDENING & BACKWARD-COMPATIBLE COLUMN ADDITIONS
 -- =========================================================================
+-- Every table and column is hardened with non-destructive ADD COLUMN IF NOT EXISTS
+-- so that legacy or partially migrated databases can be safely upgraded in-place.
 
--- Failsafe column additions for existing databases
-DO $$
-BEGIN
-    -- Vouchers foreign key link to journal_entries
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'vouchers' AND column_name = 'journal_entry_id') THEN
-        ALTER TABLE public.vouchers ADD COLUMN journal_entry_id TEXT REFERENCES public.journal_entries(id) ON DELETE SET NULL;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'vouchers' AND column_name = 'updated_at') THEN
-        ALTER TABLE public.vouchers ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
-    END IF;
+-- 3.1 Categories Table
+ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS type TEXT;
+ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS color TEXT DEFAULT '#94a3b8';
+ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS icon TEXT DEFAULT 'tag';
+ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
-    -- Transactions credit extension columns
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'transactions' AND column_name = 'total_amount') THEN
-        ALTER TABLE public.transactions ADD COLUMN total_amount NUMERIC(14, 2) DEFAULT NULL;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'transactions' AND column_name = 'paid_amount') THEN
-        ALTER TABLE public.transactions ADD COLUMN paid_amount NUMERIC(14, 2) DEFAULT NULL;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'transactions' AND column_name = 'balance_due') THEN
-        ALTER TABLE public.transactions ADD COLUMN balance_due NUMERIC(14, 2) DEFAULT 0.00;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'transactions' AND column_name = 'credit_status') THEN
-        ALTER TABLE public.transactions ADD COLUMN credit_status TEXT DEFAULT 'PAID';
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'transactions' AND column_name = 'due_date') THEN
-        ALTER TABLE public.transactions ADD COLUMN due_date TIMESTAMPTZ DEFAULT NULL;
-    END IF;
+-- 3.2 Entities (Customers, Suppliers, Transporters, Contractors) Table
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS type TEXT DEFAULT 'Other';
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS alt_phone TEXT;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS gstin TEXT;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS contact_person TEXT;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS payment_terms TEXT;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(14, 2) DEFAULT NULL;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS credit_period INTEGER DEFAULT NULL;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS credit_terms TEXT DEFAULT NULL;
+ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
-    -- Production entries movement links
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'production_entries' AND column_name = 'veneer_movement_id') THEN
-        ALTER TABLE public.production_entries ADD COLUMN veneer_movement_id TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'production_entries' AND column_name = 'plywood_movement_id') THEN
-        ALTER TABLE public.production_entries ADD COLUMN plywood_movement_id TEXT;
-    END IF;
+-- 3.3 Custom Fields Table
+ALTER TABLE public.custom_fields ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE public.custom_fields ADD COLUMN IF NOT EXISTS type TEXT;
+ALTER TABLE public.custom_fields ADD COLUMN IF NOT EXISTS apply_to TEXT;
+ALTER TABLE public.custom_fields ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
-    -- Salary records journal and payment links
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'salary_records' AND column_name = 'booking_journal_id') THEN
-        ALTER TABLE public.salary_records ADD COLUMN booking_journal_id TEXT REFERENCES public.journal_entries(id) ON DELETE SET NULL;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'salary_records' AND column_name = 'payment_journal_id') THEN
-        ALTER TABLE public.salary_records ADD COLUMN payment_journal_id TEXT REFERENCES public.journal_entries(id) ON DELETE SET NULL;
-    END IF;
+-- 3.4 Transactions Table
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS type TEXT;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS total_amount NUMERIC(14, 2) DEFAULT NULL;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(14, 2) DEFAULT NULL;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS balance_due NUMERIC(14, 2) DEFAULT 0.00;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS credit_status TEXT DEFAULT 'PAID';
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS due_date TIMESTAMPTZ DEFAULT NULL;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS date TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS category_id TEXT REFERENCES public.categories(id) ON DELETE SET NULL;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS entity_id TEXT REFERENCES public.entities(id) ON DELETE SET NULL;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS product_id TEXT;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS quantity NUMERIC(14, 2);
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS reference TEXT;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS custom_data JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS business_entity_id TEXT REFERENCES public.business_entities(id) ON DELETE SET NULL;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
-    -- Transactions company link
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'transactions' AND column_name = 'business_entity_id') THEN
-        ALTER TABLE public.transactions ADD COLUMN business_entity_id TEXT REFERENCES public.business_entities(id) ON DELETE SET NULL;
-    END IF;
-    -- Journal entries updated_at
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'journal_entries' AND column_name = 'updated_at') THEN
-        ALTER TABLE public.journal_entries ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
-    END IF;
+-- 3.5 Credit Payments Table
+ALTER TABLE public.credit_payments ADD COLUMN IF NOT EXISTS transaction_id TEXT REFERENCES public.transactions(id) ON DELETE CASCADE;
+ALTER TABLE public.credit_payments ADD COLUMN IF NOT EXISTS entity_id TEXT REFERENCES public.entities(id) ON DELETE CASCADE;
+ALTER TABLE public.credit_payments ADD COLUMN IF NOT EXISTS amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.credit_payments ADD COLUMN IF NOT EXISTS payment_type TEXT;
+ALTER TABLE public.credit_payments ADD COLUMN IF NOT EXISTS payment_date TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.credit_payments ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE public.credit_payments ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
-    -- Master edit functionality fields: Entities (Customers & Suppliers)
-    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS email TEXT;
-    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS alt_phone TEXT;
-    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS gstin TEXT;
-    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS contact_person TEXT;
-    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS payment_terms TEXT;
-    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(14, 2) DEFAULT NULL;
-    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS credit_period INTEGER DEFAULT NULL;
-    ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS credit_terms TEXT DEFAULT NULL;
+-- 3.6 Business Entities Table
+ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS entity_type TEXT NOT NULL DEFAULT 'company';
+ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS parent_id TEXT REFERENCES public.business_entities(id) ON DELETE SET NULL;
+ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS gstin TEXT;
+ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS location TEXT;
+ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
-    -- Products & Variants
-    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS sku TEXT;
-    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS brand TEXT;
-    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS grade TEXT;
-    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(14, 2) DEFAULT NULL;
-    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS selling_price NUMERIC(14, 2) DEFAULT NULL;
-    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS wholesale_price NUMERIC(14, 2) DEFAULT NULL;
-    ALTER TABLE public.products ADD COLUMN IF NOT EXISTS min_stock_level NUMERIC(14, 2) DEFAULT NULL;
+-- 3.7 Accounts Table
+ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS account_type TEXT;
+ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS sub_type TEXT;
+ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS parent_id TEXT REFERENCES public.accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
-    ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(14, 2) DEFAULT NULL;
-    ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS selling_price NUMERIC(14, 2) DEFAULT NULL;
-    ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS wholesale_price NUMERIC(14, 2) DEFAULT NULL;
-    ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS grade TEXT DEFAULT NULL;
-    ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS min_stock_level NUMERIC(14, 2) DEFAULT NULL;
+-- 3.8 Products Table
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS category TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS unit TEXT NOT NULL DEFAULT 'pieces';
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS sku TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS brand TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS grade TEXT;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(14, 2) DEFAULT NULL;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS selling_price NUMERIC(14, 2) DEFAULT NULL;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS wholesale_price NUMERIC(14, 2) DEFAULT NULL;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS min_stock_level NUMERIC(14, 2) DEFAULT NULL;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
-    -- Categories & Warehouses
-    ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS description TEXT;
-    ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS location TEXT;
-    ALTER TABLE public.business_entities ADD COLUMN IF NOT EXISTS description TEXT;
-    ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS join_date DATE NOT NULL DEFAULT CURRENT_DATE;
-    ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS bank_account_no TEXT;
-    ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS ifsc TEXT;
-    ALTER TABLE public.partners ADD COLUMN IF NOT EXISTS address TEXT;
-END;
-$$;
+-- 3.9 Product Variants Table
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS product_id TEXT REFERENCES public.products(id) ON DELETE CASCADE;
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS size TEXT;
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS thickness NUMERIC(6, 2);
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS sqft_per_sheet NUMERIC(8, 4);
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS sku TEXT;
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS unit TEXT;
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(14, 2) DEFAULT NULL;
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS selling_price NUMERIC(14, 2) DEFAULT NULL;
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS wholesale_price NUMERIC(14, 2) DEFAULT NULL;
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS grade TEXT DEFAULT NULL;
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS min_stock_level NUMERIC(14, 2) DEFAULT NULL;
+ALTER TABLE public.product_variants ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.10 Employees Table
+ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS designation TEXT;
+ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS monthly_salary NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS join_date DATE NOT NULL DEFAULT CURRENT_DATE;
+ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS bank_account_no TEXT;
+ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS ifsc TEXT;
+ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE public.employees ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.11 Partners Table
+ALTER TABLE public.partners ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE public.partners ADD COLUMN IF NOT EXISTS monthly_remun NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.partners ADD COLUMN IF NOT EXISTS profit_share_pct NUMERIC(5, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.partners ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE public.partners ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE public.partners ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE public.partners ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.12 Bank Accounts Table
+ALTER TABLE public.bank_accounts ADD COLUMN IF NOT EXISTS business_entity_id TEXT REFERENCES public.business_entities(id) ON DELETE CASCADE;
+ALTER TABLE public.bank_accounts ADD COLUMN IF NOT EXISTS bank_name TEXT;
+ALTER TABLE public.bank_accounts ADD COLUMN IF NOT EXISTS account_no TEXT;
+ALTER TABLE public.bank_accounts ADD COLUMN IF NOT EXISTS branch TEXT;
+ALTER TABLE public.bank_accounts ADD COLUMN IF NOT EXISTS branch_name TEXT;
+ALTER TABLE public.bank_accounts ADD COLUMN IF NOT EXISTS ifsc TEXT;
+ALTER TABLE public.bank_accounts ADD COLUMN IF NOT EXISTS opening_balance NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.bank_accounts ADD COLUMN IF NOT EXISTS current_balance NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.bank_accounts ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE public.bank_accounts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.13 Stock Balances Table
+ALTER TABLE public.stock_balances ADD COLUMN IF NOT EXISTS business_entity_id TEXT REFERENCES public.business_entities(id) ON DELETE CASCADE;
+ALTER TABLE public.stock_balances ADD COLUMN IF NOT EXISTS product_id TEXT REFERENCES public.products(id) ON DELETE CASCADE;
+ALTER TABLE public.stock_balances ADD COLUMN IF NOT EXISTS variant_id TEXT REFERENCES public.product_variants(id) ON DELETE CASCADE;
+ALTER TABLE public.stock_balances ADD COLUMN IF NOT EXISTS qty_sheets NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.stock_balances ADD COLUMN IF NOT EXISTS qty_sqft NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.stock_balances ADD COLUMN IF NOT EXISTS qty_pieces NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.stock_balances ADD COLUMN IF NOT EXISTS qty_other NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.stock_balances ADD COLUMN IF NOT EXISTS avg_cost NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.stock_balances ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.14 Stock Movements Table
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS business_entity_id TEXT REFERENCES public.business_entities(id) ON DELETE CASCADE;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS product_id TEXT REFERENCES public.products(id) ON DELETE CASCADE;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS variant_id TEXT REFERENCES public.product_variants(id) ON DELETE SET NULL;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS movement_type TEXT;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS qty_sheets NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS qty_sqft NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS qty_pieces NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS qty_other NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS reference_id TEXT;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS reference_type TEXT;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS narration TEXT;
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS movement_date TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.stock_movements ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.15 Production Entries Table
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS business_entity_id TEXT REFERENCES public.business_entities(id) ON DELETE CASCADE;
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS production_date TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS plywood_product_id TEXT REFERENCES public.products(id) ON DELETE RESTRICT;
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS plywood_variant_id TEXT REFERENCES public.product_variants(id) ON DELETE RESTRICT;
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS sheets_produced NUMERIC(14, 4);
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS sqft_produced NUMERIC(14, 4);
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS face_veneer_product_id TEXT REFERENCES public.products(id) ON DELETE RESTRICT;
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS face_veneer_ratio NUMERIC(8, 4) NOT NULL DEFAULT 2.0000;
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS face_veneer_consumed NUMERIC(14, 4);
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS veneer_movement_id TEXT;
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS plywood_movement_id TEXT;
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'posted';
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE public.production_entries ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.16 Vouchers Header Table
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS business_entity_id TEXT REFERENCES public.business_entities(id) ON DELETE CASCADE;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS voucher_type TEXT;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS voucher_number TEXT;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS voucher_date TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS party_entity_id TEXT REFERENCES public.entities(id) ON DELETE SET NULL;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS subtotal NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS tax_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS total_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS balance_due NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'unpaid';
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS payment_method TEXT;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS bank_account_id TEXT REFERENCES public.bank_accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS reference TEXT;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS narration TEXT;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS source_transaction_id TEXT REFERENCES public.transactions(id) ON DELETE SET NULL;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS journal_entry_id TEXT REFERENCES public.journal_entries(id) ON DELETE SET NULL;
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'posted';
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.vouchers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.17 Voucher Line Items Table
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS voucher_id TEXT REFERENCES public.vouchers(id) ON DELETE CASCADE;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS line_no INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS product_id TEXT REFERENCES public.products(id) ON DELETE SET NULL;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS variant_id TEXT REFERENCES public.product_variants(id) ON DELETE SET NULL;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS unit TEXT NOT NULL DEFAULT 'pieces';
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS quantity NUMERIC(14, 4) NOT NULL DEFAULT 1.0000;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS quantity_sqft NUMERIC(14, 4);
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS rate NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS tax_percent NUMERIC(5, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS tax_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS line_total NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(14, 4) NOT NULL DEFAULT 0.0000;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS debit_account_id TEXT REFERENCES public.accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS credit_account_id TEXT REFERENCES public.accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.voucher_lines ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.18 Journal Entries Table
+ALTER TABLE public.journal_entries ADD COLUMN IF NOT EXISTS business_entity_id TEXT REFERENCES public.business_entities(id) ON DELETE CASCADE;
+ALTER TABLE public.journal_entries ADD COLUMN IF NOT EXISTS entry_date TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.journal_entries ADD COLUMN IF NOT EXISTS reference TEXT;
+ALTER TABLE public.journal_entries ADD COLUMN IF NOT EXISTS narration TEXT;
+ALTER TABLE public.journal_entries ADD COLUMN IF NOT EXISTS total_debit NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.journal_entries ADD COLUMN IF NOT EXISTS total_credit NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.journal_entries ADD COLUMN IF NOT EXISTS is_balanced BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.journal_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'posted';
+ALTER TABLE public.journal_entries ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.journal_entries ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.19 Journal Lines Table
+ALTER TABLE public.journal_lines ADD COLUMN IF NOT EXISTS journal_id TEXT REFERENCES public.journal_entries(id) ON DELETE CASCADE;
+ALTER TABLE public.journal_lines ADD COLUMN IF NOT EXISTS account_id TEXT REFERENCES public.accounts(id) ON DELETE RESTRICT;
+ALTER TABLE public.journal_lines ADD COLUMN IF NOT EXISTS debit_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.journal_lines ADD COLUMN IF NOT EXISTS credit_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.journal_lines ADD COLUMN IF NOT EXISTS narration TEXT;
+ALTER TABLE public.journal_lines ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.20 Salary Records Table (EXHAUSTIVE MIGRATION & HARDENING)
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS business_entity_id TEXT REFERENCES public.business_entities(id) ON DELETE CASCADE;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS voucher_date TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS salary_month TEXT NOT NULL DEFAULT to_char(NOW(), 'YYYY-MM');
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS salary_frequency TEXT NOT NULL DEFAULT 'monthly';
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS payee_type TEXT NOT NULL DEFAULT 'employee';
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS employee_id TEXT REFERENCES public.employees(id) ON DELETE SET NULL;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS partner_id TEXT REFERENCES public.partners(id) ON DELETE SET NULL;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS payee_name TEXT NOT NULL DEFAULT 'Unknown';
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS booked_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'booked';
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS expense_account_id TEXT REFERENCES public.accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS payable_account_id TEXT REFERENCES public.accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS booking_journal_id TEXT REFERENCES public.journal_entries(id) ON DELETE SET NULL;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS payment_journal_id TEXT REFERENCES public.journal_entries(id) ON DELETE SET NULL;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS payment_method TEXT;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS bank_account_id TEXT REFERENCES public.bank_accounts(id) ON DELETE SET NULL;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS payment_reference TEXT;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS payment_date TIMESTAMPTZ;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS narration TEXT;
+ALTER TABLE public.salary_records ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.21 Bank Statement Transactions Table
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS bank_account_id TEXT REFERENCES public.bank_accounts(id) ON DELETE CASCADE;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS txn_date DATE NOT NULL DEFAULT CURRENT_DATE;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS reference_no TEXT;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS reference TEXT;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS debit_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS credit_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS balance_after NUMERIC(14, 2);
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS balance NUMERIC(14, 2);
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS is_matched BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS import_batch TEXT;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS transaction_id TEXT REFERENCES public.transactions(id) ON DELETE SET NULL;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS potential_duplicate_id TEXT REFERENCES public.transactions(id) ON DELETE SET NULL;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS duplicate_reason TEXT;
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS review_status TEXT NOT NULL DEFAULT 'auto_added';
+ALTER TABLE public.bank_statement_transactions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.22 Bank Reconciliation Matches Table
+ALTER TABLE public.bank_reconciliation_matches ADD COLUMN IF NOT EXISTS bank_statement_txn_id TEXT REFERENCES public.bank_statement_transactions(id) ON DELETE CASCADE;
+ALTER TABLE public.bank_reconciliation_matches ADD COLUMN IF NOT EXISTS voucher_id TEXT REFERENCES public.vouchers(id) ON DELETE SET NULL;
+ALTER TABLE public.bank_reconciliation_matches ADD COLUMN IF NOT EXISTS salary_record_id TEXT REFERENCES public.salary_records(id) ON DELETE SET NULL;
+ALTER TABLE public.bank_reconciliation_matches ADD COLUMN IF NOT EXISTS journal_entry_id TEXT REFERENCES public.journal_entries(id) ON DELETE SET NULL;
+ALTER TABLE public.bank_reconciliation_matches ADD COLUMN IF NOT EXISTS matched_amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.bank_reconciliation_matches ADD COLUMN IF NOT EXISTS matched_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.23 ERP Settings Table
+ALTER TABLE public.erp_settings ADD COLUMN IF NOT EXISTS value TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.erp_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.24 Voucher Sequences Table
+ALTER TABLE public.voucher_sequences ADD COLUMN IF NOT EXISTS last_number INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.voucher_sequences ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.25 Units of Measurement Table
+ALTER TABLE public.units_of_measurement ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE public.units_of_measurement ADD COLUMN IF NOT EXISTS abbreviation TEXT;
+ALTER TABLE public.units_of_measurement ADD COLUMN IF NOT EXISTS conversion_factor NUMERIC(12, 6) NOT NULL DEFAULT 1.000000;
+ALTER TABLE public.units_of_measurement ADD COLUMN IF NOT EXISTS base_unit TEXT DEFAULT 'pieces';
+ALTER TABLE public.units_of_measurement ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE public.units_of_measurement ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE public.units_of_measurement ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.units_of_measurement ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- 3.26 Edit Audit Logs Table
+ALTER TABLE public.edit_audit_logs ADD COLUMN IF NOT EXISTS entity_type TEXT NOT NULL DEFAULT 'OTHER';
+ALTER TABLE public.edit_audit_logs ADD COLUMN IF NOT EXISTS record_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.edit_audit_logs ADD COLUMN IF NOT EXISTS user_identifier TEXT DEFAULT 'master_user';
+ALTER TABLE public.edit_audit_logs ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT 'UPDATE';
+ALTER TABLE public.edit_audit_logs ADD COLUMN IF NOT EXISTS old_values JSONB;
+ALTER TABLE public.edit_audit_logs ADD COLUMN IF NOT EXISTS new_values JSONB;
+ALTER TABLE public.edit_audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 -- =========================================================================
 -- 4. MATHEMATICAL AND DOMAIN INTEGRITY CONSTRAINTS
@@ -2381,6 +2615,9 @@ GRANT USAGE ON SCHEMA public TO anon, authenticated;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated;
+
+-- Force PostgREST schema cache reload immediately
+NOTIFY pgrst, 'reload schema';
 
 -- =========================================================================
 -- MASTER SCHEMA SETUP COMPLETE
