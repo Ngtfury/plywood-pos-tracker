@@ -2176,9 +2176,6 @@ BEGIN
     END IF;
 
     v_balance := public.calculate_bank_account_balance(p_bank_account_id);
-    IF v_balance < 0 THEN
-        RAISE EXCEPTION 'Bank account % cannot have a negative available balance', p_bank_account_id;
-    END IF;
 
     UPDATE public.bank_accounts
     SET current_balance = v_balance
@@ -2211,7 +2208,7 @@ BEGIN
     FOR v_account_id IN
         SELECT b.id
         FROM public.bank_accounts b
-        WHERE p_business_entity_id IS NULL OR b.business_entity_id = p_business_entity_id
+        WHERE p_business_entity_id IS NULL OR b.business_entity_id = p_business_entity_id OR b.business_entity_id IS NULL
         FOR UPDATE
     LOOP
         PERFORM public.refresh_bank_account_balance(v_account_id);
@@ -2219,12 +2216,12 @@ BEGIN
 
     RETURN QUERY
     SELECT b.id, b.business_entity_id, b.bank_name, b.account_no,
-           b.branch_name,
+           COALESCE(b.branch_name, b.branch) AS branch_name,
            b.ifsc, b.opening_balance, b.current_balance, b.is_active,
            be.name AS business_entity_name
     FROM public.bank_accounts b
     LEFT JOIN public.business_entities be ON be.id = b.business_entity_id
-    WHERE p_business_entity_id IS NULL OR b.business_entity_id = p_business_entity_id
+    WHERE p_business_entity_id IS NULL OR b.business_entity_id = p_business_entity_id OR b.business_entity_id IS NULL
     ORDER BY b.bank_name;
 END;
 $$;

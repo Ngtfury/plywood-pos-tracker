@@ -145,6 +145,8 @@ export function Masters() {
     try {
       const existing = bankAccounts.find(x => x.id === bankForm.id);
       await upsertBankAccount(bankForm, existing);
+      const bnkList = await getBankAccounts();
+      setBankAccounts(bnkList);
       triggerRefresh();
       setBankModalOpen(false);
     } catch (err: any) {
@@ -161,6 +163,8 @@ export function Masters() {
 
     try {
       await deleteBankAccount(bank.id);
+      const bnkList = await getBankAccounts();
+      setBankAccounts(bnkList);
       triggerRefresh();
     } catch (err: any) {
       alert(err?.message || "This bank account cannot be removed because it has financial history. Deactivate it instead.");

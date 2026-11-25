@@ -223,7 +223,8 @@ export async function checkSchemaHealth(): Promise<SchemaHealthResult> {
   // 1. Verify all 26 required tables
   const tableChecks = await Promise.allSettled(
     ALL_REQUIRED_TABLES.map(async (table) => {
-      const { error } = await supabase.from(table).select('*', { count: 'exact', head: true });
+      const probeCol = MASTER_TABLE_COLUMNS[table]?.[0] || 'id';
+      const { error } = await supabase.from(table).select(probeCol).limit(1);
       if (
         error &&
         (error.code === '42P01' ||
@@ -249,8 +250,8 @@ export async function checkSchemaHealth(): Promise<SchemaHealthResult> {
   await Promise.allSettled(
     existingTables.map(async (table) => {
       const expectedCols = MASTER_TABLE_COLUMNS[table];
-      // Fast path: probe all columns of this table in a single HEAD select
-      const { error } = await supabase.from(table).select(expectedCols.join(','), { head: true }).limit(1);
+      // Fast path: probe all columns of this table in a single select query (limit 1)
+      const { error } = await supabase.from(table).select(expectedCols.join(',')).limit(1);
 
       if (!error) {
         // All expected columns exist!
@@ -259,7 +260,7 @@ export async function checkSchemaHealth(): Promise<SchemaHealthResult> {
 
       // If an error occurred, probe columns individually to find exact missing columns
       for (const col of expectedCols) {
-        const { error: colErr } = await supabase.from(table).select(col, { head: true }).limit(1);
+        const { error: colErr } = await supabase.from(table).select(col).limit(1);
         if (
           colErr &&
           (colErr.code === '42703' ||

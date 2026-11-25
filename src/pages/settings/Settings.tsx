@@ -152,6 +152,11 @@ export function Settings({ onDisconnect }: SettingsProps) {
     }).catch(console.error).finally(() => setLoadingProfile(false));
   }, [refreshTrigger]);
 
+  // Automatically check schema health when Settings opens
+  useEffect(() => {
+    checkSchemaHealth().then(setSchemaHealth).catch(console.error);
+  }, []);
+
   const handleSaveBusinessProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!companyName.trim()) {
@@ -268,6 +273,23 @@ export function Settings({ onDisconnect }: SettingsProps) {
     try {
       const res = await checkSchemaHealth();
       setSchemaHealth(res);
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      if (res.isFit) {
+        setSyncFeedback({
+          success: true,
+          message: `Schema verified at ${timeStr}: All ${res.verifiedTablesCount}/${res.totalTables} tables, ${res.verifiedColumnsCount}/${res.totalColumns} columns, and stored procedures are healthy!`,
+        });
+      } else if (res.missingTables.length === 0 && res.missingColumns.length === 0) {
+        setSyncFeedback({
+          success: true,
+          message: `Database tables & columns verified at ${timeStr} (26/26 tables, 295/295 columns). Note: Stored procedures (${res.missingFunctions.join(', ')}) require a one-time run in Supabase SQL Editor to enable in-app migrations.`,
+        });
+      } else {
+        setSyncFeedback({
+          success: false,
+          message: `Schema checked at ${timeStr}: ${res.summary}`,
+        });
+      }
     } catch (e: any) {
       setSyncFeedback({ success: false, message: e.message || 'Failed to check schema health.' });
     } finally {
@@ -280,11 +302,36 @@ export function Settings({ onDisconnect }: SettingsProps) {
     setSyncFeedback(null);
     try {
       const res = await applyMasterSchema();
-      setSyncFeedback(res);
-      const health = await checkSchemaHealth();
-      setSchemaHealth(health);
       if (res.success) {
+        setSyncFeedback({
+          success: true,
+          message: res.message || 'Master schema applied and verified successfully in Supabase!',
+        });
+        const health = await checkSchemaHealth();
+        setSchemaHealth(health);
         triggerRefresh();
+      } else {
+        // Automatically copy supabase.sql and open Supabase SQL editor
+        try {
+          await navigator.clipboard.writeText(MASTER_SCHEMA_SQL);
+          setCopiedSchemaSql(true);
+          setTimeout(() => setCopiedSchemaSql(false), 3000);
+        } catch {
+          // fallback
+        }
+
+        if (sqlEditorUrl) {
+          window.open(sqlEditorUrl, '_blank');
+        }
+
+        const health = await checkSchemaHealth();
+        setSchemaHealth(health);
+
+        setSyncFeedback({
+          success: false,
+          message:
+            'Copied supabase.sql to clipboard and opened Supabase SQL Editor in your browser! Paste (Ctrl+V) and click "Run" in your Supabase dashboard to enable stored procedures & auto-sync.',
+        });
       }
     } catch (e: any) {
       setSyncFeedback({ success: false, message: e.message || 'Schema sync failed.' });

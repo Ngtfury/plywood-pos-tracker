@@ -126,11 +126,24 @@ export function Banking() {
   const loadAccounts = () => {
     setLoading(true);
     getBankAccounts(selectedEntityId || undefined)
-      .then((bList) => {
-        setBankAccounts(bList);
-        if (bList.length > 0) {
-          if (!selectedBankId || !bList.some((b) => b.id === selectedBankId)) {
-            setSelectedBankId(bList[0].id);
+      .then(async (bList) => {
+        // If no accounts found for selected entity, try fetching all to see if any general/other accounts exist
+        let finalAccounts = bList;
+        if (finalAccounts.length === 0 && selectedEntityId) {
+          try {
+            const allList = await getBankAccounts();
+            if (allList.length > 0) {
+              finalAccounts = allList;
+            }
+          } catch {
+            // keep empty
+          }
+        }
+
+        setBankAccounts(finalAccounts);
+        if (finalAccounts.length > 0) {
+          if (!selectedBankId || !finalAccounts.some((b) => b.id === selectedBankId)) {
+            setSelectedBankId(finalAccounts[0].id);
           }
         } else {
           setSelectedBankId("");
@@ -225,7 +238,10 @@ export function Banking() {
       });
       setAddBankModalOpen(false);
 
-      const bList = await getBankAccounts(selectedEntityId || undefined);
+      let bList = await getBankAccounts(selectedEntityId || undefined);
+      if (!bList.some((b) => b.id === newId)) {
+        bList = await getBankAccounts();
+      }
       setBankAccounts(bList);
       setSelectedBankId(newId);
       triggerRefresh();

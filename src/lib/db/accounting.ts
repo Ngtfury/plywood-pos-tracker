@@ -455,34 +455,147 @@ export async function upsertPartner(data: Partial<Partner>, oldData?: Partial<Pa
 
 export async function getBankAccounts(businessEntityId?: string): Promise<BankAccount[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase.rpc('get_bank_accounts_with_balances', {
-    p_business_entity_id: businessEntityId || null,
-  });
-  if (error) { console.warn('Error fetching bank_accounts:', error.message); return []; }
-  return (data || []) as BankAccount[];
+
+  // 1. Try atomic stored procedure first (refreshes balance dynamically)
+  try {
+    const { data, error } = await supabase.rpc('get_bank_accounts_with_balances', {
+      p_business_entity_id: businessEntityId || null,
+    });
+    if (!error && Array.isArray(data) && data.length > 0) {
+      return data as BankAccount[];
+    }
+  } catch (rpcErr) {
+    console.warn('get_bank_accounts_with_balances RPC error, falling back to direct table select:', rpcErr);
+  }
+
+  // 2. Resilient Direct Table Select Fallback: Always returns bank accounts even without RPCs
+  try {
+    let rawData: any[] | null = null;
+    let tableError: any = null;
+
+    // First attempt: Join business_entities to get company name
+    try {
+      let query = supabase
+        .from('bank_accounts')
+        .select(`
+          id,
+          business_entity_id,
+          bank_name,
+          account_no,
+          branch,
+          branch_name,
+          ifsc,
+          opening_balance,
+          current_balance,
+          is_active,
+          business_entities (
+            name
+          )
+        `)
+        .order('bank_name');
+
+      if (businessEntityId) {
+        // Include accounts explicitly assigned to this company OR available globally (null entity)
+        query = query.or(`business_entity_id.eq.${businessEntityId},business_entity_id.is.null`);
+      }
+
+      const res = await query;
+      rawData = res.data;
+      tableError = res.error;
+    } catch (e: any) {
+      tableError = e;
+    }
+
+    // Fallback: If joined or column-specific query failed, select '*' directly
+    if (tableError || !rawData) {
+      let fallbackQuery = supabase.from('bank_accounts').select('*').order('bank_name');
+      if (businessEntityId) {
+        fallbackQuery = fallbackQuery.or(`business_entity_id.eq.${businessEntityId},business_entity_id.is.null`);
+      }
+      const fbRes = await fallbackQuery;
+      rawData = fbRes.data;
+      tableError = fbRes.error;
+    }
+
+    if (!tableError && Array.isArray(rawData)) {
+      return rawData.map((r: any) => ({
+        id: r.id,
+        business_entity_id: r.business_entity_id || undefined,
+        bank_name: r.bank_name || 'Unnamed Bank',
+        account_no: r.account_no || '',
+        branch_name: r.branch_name || r.branch || undefined,
+        ifsc: r.ifsc || undefined,
+        opening_balance: Number(r.opening_balance) || 0,
+        current_balance: Number(r.current_balance != null ? r.current_balance : r.opening_balance) || 0,
+        is_active: r.is_active !== false,
+        business_entity_name: r.business_entities?.name || undefined,
+      }));
+    } else if (tableError) {
+      console.warn('Direct bank_accounts select failed:', tableError.message);
+    }
+  } catch (err: any) {
+    console.warn('Error fetching bank_accounts:', err?.message || err);
+  }
+
+  return [];
 }
 
 export async function upsertBankAccount(data: Partial<BankAccount>, oldData?: Partial<BankAccount>): Promise<string> {
   const supabase = getSupabase();
   const id = data.id || `bnk_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const row = {
+  const branchVal = data.branch_name || (data as any).branch || null;
+  const openingBal = data.opening_balance != null ? Number(data.opening_balance) : 0;
+
+  const row: Record<string, any> = {
     id,
     business_entity_id: data.business_entity_id || null,
     bank_name: data.bank_name ? data.bank_name.trim() : 'Unnamed Bank',
     account_no: data.account_no ? data.account_no.trim() : '',
     ifsc: data.ifsc || null,
-    branch_name: data.branch_name || null,
-    opening_balance: data.opening_balance != null ? Number(data.opening_balance) : 0,
-    ...(data.id ? {} : { current_balance: data.opening_balance != null ? Number(data.opening_balance) : 0 }),
+    branch: branchVal,
+    branch_name: branchVal,
+    opening_balance: openingBal,
     is_active: data.is_active !== false,
   };
-  const { error } = await supabase.from('bank_accounts').upsert([row]);
-  if (error) throw error;
 
-  const { error: balanceError } = await supabase.rpc('refresh_bank_account_balance', {
-    p_bank_account_id: id,
-  });
-  if (balanceError) throw balanceError;
+  if (!data.id) {
+    row.current_balance = data.current_balance != null ? Number(data.current_balance) : openingBal;
+  } else if (data.current_balance != null) {
+    row.current_balance = Number(data.current_balance);
+  }
+
+  // Attempt 1: Upsert with both branch and branch_name for maximum compatibility
+  let { error } = await supabase.from('bank_accounts').upsert([row]);
+
+  // If column error occurs (e.g. branch_name or branch missing in older schema), retry adapting columns
+  if (error && (error.code === 'PGRST204' || error.message?.includes('branch'))) {
+    if (error.message?.includes('branch_name')) {
+      const { branch_name, ...rowWithoutBranchName } = row;
+      const res = await supabase.from('bank_accounts').upsert([rowWithoutBranchName]);
+      error = res.error;
+    } else if (error.message?.includes('branch')) {
+      const { branch, ...rowWithoutBranch } = row;
+      const res = await supabase.from('bank_accounts').upsert([rowWithoutBranch]);
+      error = res.error;
+    }
+  }
+
+  if (error) {
+    console.error('Failed to upsert bank_account:', error);
+    throw new Error(error.message || 'Failed to save bank account to database.');
+  }
+
+  // Refresh dynamic balance if procedure is available (non-blocking)
+  try {
+    const { error: balanceError } = await supabase.rpc('refresh_bank_account_balance', {
+      p_bank_account_id: id,
+    });
+    if (balanceError && balanceError.code !== 'PGRST202') {
+      console.warn('refresh_bank_account_balance notice:', balanceError.message);
+    }
+  } catch {
+    // Non-blocking fallback
+  }
 
   await recordAuditLog({
     entity_type: 'bank_accounts',
@@ -497,13 +610,39 @@ export async function upsertBankAccount(data: Partial<BankAccount>, oldData?: Pa
 
 export async function deleteBankAccount(id: string): Promise<void> {
   const supabase = getSupabase();
-  const { error } = await supabase.rpc('delete_bank_account', {
+
+  // 1. Try atomic delete stored procedure
+  const { error: rpcErr } = await supabase.rpc('delete_bank_account', {
     p_bank_account_id: id,
   });
-  if (error) {
-    console.error('Error deleting bank account:', error);
-    throw error;
+
+  if (!rpcErr) return;
+
+  // 2. If stored procedure is not installed in database, perform client-side history audit & safe delete
+  if (rpcErr.code === 'PGRST202' || rpcErr.message?.includes('not find')) {
+    const [txns, vchs, sals, bsts] = await Promise.all([
+      supabase.from('transactions').select('id').eq('custom_data->>bank_account_id', id).limit(1),
+      supabase.from('vouchers').select('id').eq('bank_account_id', id).limit(1),
+      supabase.from('salary_records').select('id').eq('bank_account_id', id).limit(1),
+      supabase.from('bank_statement_transactions').select('id').eq('bank_account_id', id).limit(1),
+    ]);
+
+    const hasHistory =
+      (txns.data && txns.data.length > 0) ||
+      (vchs.data && vchs.data.length > 0) ||
+      (sals.data && sals.data.length > 0) ||
+      (bsts.data && bsts.data.length > 0);
+
+    if (hasHistory) {
+      throw new Error('Bank account has financial history and cannot be deleted. Deactivate it instead.');
+    }
+
+    const { error: delErr } = await supabase.from('bank_accounts').delete().eq('id', id);
+    if (delErr) throw delErr;
+    return;
   }
+
+  throw new Error(rpcErr.message);
 }
 
 // ---- Salary Records ----
