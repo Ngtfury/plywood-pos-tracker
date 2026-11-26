@@ -16,7 +16,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  PlusCircle, Layers, Sparkles, ChevronDown, ChevronRight, Pencil, Search,
+  PlusCircle, Layers, Sparkles, ChevronDown, ChevronRight, Pencil, Search, Trash2,
 } from "lucide-react";
 import type { Product, ProductVariant } from "@/lib/db/erp";
 import {
@@ -27,8 +27,10 @@ import {
 import {
   getProducts,
   upsertProduct,
+  deleteProduct,
   getProductVariants,
   upsertProductVariant,
+  deleteProductVariant,
 } from "@/lib/db/inventory";
 
 export function Products() {
@@ -312,6 +314,26 @@ export function Products() {
     }
   };
 
+  const handleDeleteProduct = async (p: Product) => {
+    if (!window.confirm(`Delete product "${p.name}" and its variants?`)) return;
+    try {
+      await deleteProduct(p.id);
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Failed to delete product (it may be referenced by existing vouchers/stock): " + (err?.message || err));
+    }
+  };
+
+  const handleDeleteVariant = async (v: ProductVariant) => {
+    if (!window.confirm(`Delete variant "${v.size || "Standard"} ${v.thickness ? `${v.thickness}mm` : ""}"?`)) return;
+    try {
+      await deleteProductVariant(v.id);
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Failed to delete variant: " + (err?.message || err));
+    }
+  };
+
   const productVariantsMap = useMemo(() => {
     const map = new Map<string, ProductVariant[]>();
     for (const v of variants) {
@@ -486,6 +508,15 @@ export function Products() {
                             >
                               <Pencil className="h-3.5 w-3.5 text-blue-400" />
                             </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleDeleteProduct(prod)}
+                              className="h-8 w-8 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                              title="Delete product"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
 
                             {prod.category === "plywood" && (
                               <Button
@@ -565,17 +596,31 @@ export function Products() {
                                         <span className={v.is_active ? "text-emerald-400 font-medium" : "text-muted-foreground"}>
                                           {v.is_active ? "ACTIVE" : "INACTIVE"}
                                         </span>
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            openEditVariantModal(v);
-                                          }}
-                                          className="h-6 px-1.5 text-xs text-blue-400 hover:text-blue-300 cursor-pointer"
-                                        >
-                                          <Pencil className="h-3 w-3 mr-1" /> Edit
-                                        </Button>
+                                        <div className="flex items-center gap-1">
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              openEditVariantModal(v);
+                                            }}
+                                            className="h-6 px-1.5 text-xs text-blue-400 hover:text-blue-300 cursor-pointer"
+                                          >
+                                            <Pencil className="h-3 w-3 mr-1" /> Edit
+                                          </Button>
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleDeleteVariant(v);
+                                            }}
+                                            className="h-6 w-6 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                                            title="Delete variant"
+                                          >
+                                            <Trash2 className="h-3 w-3" />
+                                          </Button>
+                                        </div>
                                       </div>
                                     </div>
                                   ))}

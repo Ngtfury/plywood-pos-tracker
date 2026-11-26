@@ -17,7 +17,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  UserCheck, PlusCircle, CreditCard, ShieldCheck, Pencil, Ban,
+  UserCheck, PlusCircle, CreditCard, ShieldCheck, Pencil, Ban, Trash2,
 } from "lucide-react";
 import type { SalaryRecord, Employee, Partner, BankAccount } from "@/lib/db/erp";
 import {
@@ -26,6 +26,7 @@ import {
   paySalary,
   updateSalaryBooking,
   cancelSalaryBooking,
+  deleteSalaryBooking,
   getEmployees,
   getPartners,
   getBankAccounts,
@@ -330,6 +331,21 @@ export function Salary() {
     }
   };
 
+  const handleDeleteSalary = async (rec: SalaryRecord) => {
+    if (!window.confirm(`Permanently delete salary record for ${rec.payee_name} (${rec.salary_month})? Any linked journals and bank balance impact will be reversed.`)) {
+      return;
+    }
+    try {
+      setRecords((prev) => prev.filter((r) => r.id !== rec.id));
+      await deleteSalaryBooking(rec.id);
+      triggerRefresh();
+      await loadData();
+    } catch (err: any) {
+      alert("Error deleting salary record: " + (err.message || err));
+      loadData();
+    }
+  };
+
   // Filtered records
   const filteredRecords = useMemo(() => {
     return records.filter((r) => {
@@ -563,12 +579,21 @@ export function Salary() {
                             variant="ghost"
                             size="sm"
                             onClick={() => handleCancelSalary(r)}
-                            className="h-7 text-xs text-muted-foreground hover:text-rose-400 cursor-pointer"
+                            className="h-7 text-xs text-muted-foreground hover:text-amber-400 cursor-pointer"
                             title="Cancel salary booking"
                           >
                             <Ban className="h-3.5 w-3.5 mr-1" /> Cancel
                           </Button>
                         )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleDeleteSalary(r)}
+                          className="h-7 w-7 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                          title="Delete salary record"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>

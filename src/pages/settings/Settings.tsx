@@ -348,15 +348,16 @@ export function Settings({ onDisconnect }: SettingsProps) {
 
   const handleClean = async () => {
     const confirmed = window.confirm(
-      "DANGER: Are you sure you want to completely wipe all tables in Supabase? All transactions, installments, entities, and custom fields will be permanently deleted."
+      "DANGER: Are you sure you want to completely wipe EVERY single record in Supabase? This will permanently delete all transactions, vouchers, sales, purchases, bank accounts, bank statements, contacts, products, stock, salaries, journals, entities, custom fields, categories, and business settings."
     );
     if (!confirmed) return;
 
     setWiping(true);
     try {
       await clearDb(false);
+      useStore.getState().setSelectedBusinessEntityId(null);
       triggerRefresh();
-      alert("Database wiped clean! All tables are now empty and ready for fresh production entries.");
+      alert("Database wiped completely clean! Every record has been removed and the system is ready for fresh entries.");
     } catch (e: any) {
       console.error(e);
       alert("Error wiping database: " + (e.message || e));

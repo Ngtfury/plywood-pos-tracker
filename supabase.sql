@@ -2359,24 +2359,37 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
+    v_bank_ids TEXT[];
     v_bank_account_id TEXT;
 BEGIN
-    FOR v_bank_account_id IN
-        SELECT DISTINCT NULLIF(t.custom_data->>'bank_account_id', '')
-        FROM public.transactions t
-        WHERE t.id = ANY(p_ids)
-          AND NULLIF(t.custom_data->>'bank_account_id', '') IS NOT NULL
-    LOOP
-        PERFORM 1 FROM public.bank_accounts WHERE id = v_bank_account_id FOR UPDATE;
-        DELETE FROM public.transactions WHERE id = ANY(p_ids);
-        PERFORM public.refresh_bank_account_balance(v_bank_account_id);
-    END LOOP;
+    SELECT ARRAY_AGG(DISTINCT NULLIF(t.custom_data->>'bank_account_id', ''))
+    INTO v_bank_ids
+    FROM public.transactions t
+    WHERE t.id = ANY(p_ids)
+      AND NULLIF(t.custom_data->>'bank_account_id', '') IS NOT NULL;
 
+    -- Clean up matching bank statement links if present
+    UPDATE public.bank_statement_transactions
+    SET transaction_id = NULL,
+        potential_duplicate_id = NULL
+    WHERE transaction_id = ANY(p_ids)
+       OR potential_duplicate_id = ANY(p_ids);
+
+    DELETE FROM public.credit_payments WHERE transaction_id = ANY(p_ids);
     DELETE FROM public.transactions WHERE id = ANY(p_ids);
+
+    IF v_bank_ids IS NOT NULL THEN
+        FOREACH v_bank_account_id IN ARRAY v_bank_ids
+        LOOP
+            IF EXISTS (SELECT 1 FROM public.bank_accounts WHERE id = v_bank_account_id) THEN
+                PERFORM public.refresh_bank_account_balance(v_bank_account_id);
+            END IF;
+        END LOOP;
+    END IF;
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION public.delete_bank_account(p_bank_account_id TEXT)
+CREATE OR REPLACE FUNCTION public.delete_bank_account(p_bank_account_id TEXT, p_force BOOLEAN DEFAULT false)
 RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -2388,20 +2401,229 @@ BEGIN
         RAISE EXCEPTION 'Bank account % was not found', p_bank_account_id;
     END IF;
 
-    IF EXISTS (
-        SELECT 1 FROM public.transactions
-        WHERE custom_data->>'bank_account_id' = p_bank_account_id
-    ) OR EXISTS (
-        SELECT 1 FROM public.vouchers WHERE bank_account_id = p_bank_account_id
-    ) OR EXISTS (
-        SELECT 1 FROM public.salary_records WHERE bank_account_id = p_bank_account_id
-    ) OR EXISTS (
-        SELECT 1 FROM public.bank_statement_transactions WHERE bank_account_id = p_bank_account_id
-    ) THEN
-        RAISE EXCEPTION 'Bank account has financial history and cannot be deleted. Deactivate it instead.';
+    IF NOT p_force THEN
+        IF EXISTS (
+            SELECT 1 FROM public.transactions
+            WHERE custom_data->>'bank_account_id' = p_bank_account_id
+        ) OR EXISTS (
+            SELECT 1 FROM public.vouchers WHERE bank_account_id = p_bank_account_id
+        ) OR EXISTS (
+            SELECT 1 FROM public.salary_records WHERE bank_account_id = p_bank_account_id
+        ) OR EXISTS (
+            SELECT 1 FROM public.bank_statement_transactions WHERE bank_account_id = p_bank_account_id
+        ) THEN
+            RAISE EXCEPTION 'Bank account has financial history and cannot be deleted. Deactivate or force-delete it instead.';
+        END IF;
+    ELSE
+        -- Force cleanup of linked statement entries & unlink references
+        DELETE FROM public.bank_reconciliation_matches
+        WHERE bank_statement_txn_id IN (
+            SELECT id FROM public.bank_statement_transactions WHERE bank_account_id = p_bank_account_id
+        );
+        DELETE FROM public.bank_statement_transactions WHERE bank_account_id = p_bank_account_id;
+        UPDATE public.vouchers SET bank_account_id = NULL WHERE bank_account_id = p_bank_account_id;
+        UPDATE public.salary_records SET bank_account_id = NULL WHERE bank_account_id = p_bank_account_id;
+        UPDATE public.transactions
+        SET custom_data = custom_data - 'bank_account_id'
+        WHERE custom_data->>'bank_account_id' = p_bank_account_id;
     END IF;
 
     DELETE FROM public.bank_accounts WHERE id = p_bank_account_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.delete_bank_statement_transactions_atomic(
+    p_ids TEXT[],
+    p_delete_linked_auto_txns BOOLEAN DEFAULT true
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_bank_ids TEXT[];
+    v_txn_ids TEXT[];
+    v_bank_id TEXT;
+BEGIN
+    SELECT ARRAY_AGG(DISTINCT bst.bank_account_id)
+    INTO v_bank_ids
+    FROM public.bank_statement_transactions bst
+    WHERE bst.id = ANY(p_ids) AND bst.bank_account_id IS NOT NULL;
+
+    IF p_delete_linked_auto_txns THEN
+        SELECT ARRAY_AGG(DISTINCT bst.transaction_id)
+        INTO v_txn_ids
+        FROM public.bank_statement_transactions bst
+        JOIN public.transactions t ON t.id = bst.transaction_id
+        WHERE bst.id = ANY(p_ids)
+          AND bst.transaction_id IS NOT NULL
+          AND (bst.review_status = 'auto_added' OR (t.custom_data->>'is_statement_imported')::BOOLEAN IS TRUE);
+    END IF;
+
+    DELETE FROM public.bank_reconciliation_matches WHERE bank_statement_txn_id = ANY(p_ids);
+    DELETE FROM public.bank_statement_transactions WHERE id = ANY(p_ids);
+
+    IF v_txn_ids IS NOT NULL AND array_length(v_txn_ids, 1) > 0 THEN
+        DELETE FROM public.transactions WHERE id = ANY(v_txn_ids);
+    END IF;
+
+    IF v_bank_ids IS NOT NULL THEN
+        FOREACH v_bank_id IN ARRAY v_bank_ids
+        LOOP
+            IF EXISTS (SELECT 1 FROM public.bank_accounts WHERE id = v_bank_id) THEN
+                PERFORM public.refresh_bank_account_balance(v_bank_id);
+            END IF;
+        END LOOP;
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.delete_voucher_atomic(p_voucher_id TEXT)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_vch public.vouchers%ROWTYPE;
+BEGIN
+    SELECT * INTO v_vch FROM public.vouchers WHERE id = p_voucher_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Voucher % was not found', p_voucher_id;
+    END IF;
+
+    -- Safely reverse stock, bank balances, and journal if still posted
+    IF v_vch.status = 'posted' THEN
+        PERFORM public.cancel_voucher_atomic(p_voucher_id);
+    END IF;
+
+    DELETE FROM public.bank_reconciliation_matches WHERE voucher_id = p_voucher_id;
+    DELETE FROM public.voucher_lines WHERE voucher_id = p_voucher_id;
+    DELETE FROM public.vouchers WHERE id = p_voucher_id;
+
+    IF v_vch.journal_entry_id IS NOT NULL THEN
+        DELETE FROM public.bank_reconciliation_matches WHERE journal_entry_id = v_vch.journal_entry_id;
+        DELETE FROM public.journal_lines WHERE journal_id = v_vch.journal_entry_id;
+        DELETE FROM public.journal_entries WHERE id = v_vch.journal_entry_id;
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.delete_journal_entry_atomic(p_journal_id TEXT)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_je public.journal_entries%ROWTYPE;
+BEGIN
+    SELECT * INTO v_je FROM public.journal_entries WHERE id = p_journal_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Journal entry % was not found', p_journal_id;
+    END IF;
+
+    IF v_je.status = 'posted' THEN
+        PERFORM public.cancel_journal_entry_atomic(p_journal_id);
+    END IF;
+
+    DELETE FROM public.bank_reconciliation_matches WHERE journal_entry_id = p_journal_id;
+    DELETE FROM public.journal_lines WHERE journal_id = p_journal_id;
+    DELETE FROM public.journal_entries WHERE id = p_journal_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.delete_salary_booking(p_record_id TEXT)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_rec public.salary_records%ROWTYPE;
+BEGIN
+    SELECT * INTO v_rec FROM public.salary_records WHERE id = p_record_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Salary record % was not found', p_record_id;
+    END IF;
+
+    DELETE FROM public.bank_reconciliation_matches WHERE salary_record_id = p_record_id;
+    DELETE FROM public.salary_records WHERE id = p_record_id;
+
+    IF v_rec.booking_journal_id IS NOT NULL THEN
+        DELETE FROM public.journal_lines WHERE journal_id = v_rec.booking_journal_id;
+        DELETE FROM public.journal_entries WHERE id = v_rec.booking_journal_id;
+    END IF;
+    IF v_rec.payment_journal_id IS NOT NULL THEN
+        DELETE FROM public.journal_lines WHERE journal_id = v_rec.payment_journal_id;
+        DELETE FROM public.journal_entries WHERE id = v_rec.payment_journal_id;
+    END IF;
+
+    IF v_rec.bank_account_id IS NOT NULL THEN
+        PERFORM public.refresh_bank_account_balance(v_rec.bank_account_id);
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.delete_production_entry_atomic(p_production_id TEXT)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_prod public.production_entries%ROWTYPE;
+BEGIN
+    SELECT * INTO v_prod FROM public.production_entries WHERE id = p_production_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Production entry % was not found', p_production_id;
+    END IF;
+
+    IF v_prod.status = 'posted' THEN
+        PERFORM public.cancel_production_entry_atomic(p_production_id);
+    END IF;
+
+    DELETE FROM public.production_entries WHERE id = p_production_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.wipe_all_erp_data(p_keep_categories BOOLEAN DEFAULT false)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    DELETE FROM public.edit_audit_logs;
+    DELETE FROM public.bank_reconciliation_matches;
+    DELETE FROM public.bank_statement_transactions;
+    DELETE FROM public.credit_payments;
+    DELETE FROM public.voucher_lines;
+    DELETE FROM public.vouchers;
+    DELETE FROM public.salary_records;
+    DELETE FROM public.journal_lines;
+    DELETE FROM public.journal_entries;
+    DELETE FROM public.production_entries;
+    DELETE FROM public.stock_movements;
+    DELETE FROM public.stock_balances;
+    DELETE FROM public.transactions;
+    DELETE FROM public.product_variants;
+    DELETE FROM public.products;
+    DELETE FROM public.bank_accounts;
+    DELETE FROM public.employees;
+    DELETE FROM public.partners;
+    DELETE FROM public.business_entities;
+    DELETE FROM public.custom_fields;
+    DELETE FROM public.entities;
+    IF NOT COALESCE(p_keep_categories, false) THEN
+        DELETE FROM public.categories;
+    END IF;
+    DELETE FROM public.erp_settings;
+    DELETE FROM public.voucher_sequences;
+    DELETE FROM public.accounts WHERE COALESCE(is_system, false) = false;
+    DELETE FROM public.units_of_measurement
+    WHERE id NOT IN ('uom_sheets', 'uom_pieces', 'uom_sqft', 'uom_sqm', 'uom_kg', 'uom_litre');
 END;
 $$;
 
@@ -2471,9 +2693,11 @@ CREATE POLICY "Allow public all access on credit_payments" ON public.credit_paym
 DROP POLICY IF EXISTS "be_select" ON public.business_entities;
 DROP POLICY IF EXISTS "be_insert" ON public.business_entities;
 DROP POLICY IF EXISTS "be_update" ON public.business_entities;
+DROP POLICY IF EXISTS "be_delete" ON public.business_entities;
 CREATE POLICY "be_select" ON public.business_entities FOR SELECT TO public, anon, authenticated USING (true);
 CREATE POLICY "be_insert" ON public.business_entities FOR INSERT TO public, anon, authenticated WITH CHECK (length(trim(name)) > 0);
 CREATE POLICY "be_update" ON public.business_entities FOR UPDATE TO public, anon, authenticated USING (true) WITH CHECK (length(trim(name)) > 0);
+CREATE POLICY "be_delete" ON public.business_entities FOR DELETE TO public, anon, authenticated USING (true);
 
 -- 8.3 Chart of Accounts (System Account Protection)
 DROP POLICY IF EXISTS "acc_select" ON public.accounts;
@@ -2489,39 +2713,49 @@ CREATE POLICY "acc_delete" ON public.accounts FOR DELETE TO public, anon, authen
 DROP POLICY IF EXISTS "prod_select" ON public.products;
 DROP POLICY IF EXISTS "prod_insert" ON public.products;
 DROP POLICY IF EXISTS "prod_update" ON public.products;
+DROP POLICY IF EXISTS "prod_delete" ON public.products;
 CREATE POLICY "prod_select" ON public.products FOR SELECT TO public, anon, authenticated USING (true);
 CREATE POLICY "prod_insert" ON public.products FOR INSERT TO public, anon, authenticated WITH CHECK (length(trim(name)) > 0);
 CREATE POLICY "prod_update" ON public.products FOR UPDATE TO public, anon, authenticated USING (true) WITH CHECK (length(trim(name)) > 0);
+CREATE POLICY "prod_delete" ON public.products FOR DELETE TO public, anon, authenticated USING (true);
 
 DROP POLICY IF EXISTS "pv_select" ON public.product_variants;
 DROP POLICY IF EXISTS "pv_insert" ON public.product_variants;
 DROP POLICY IF EXISTS "pv_update" ON public.product_variants;
+DROP POLICY IF EXISTS "pv_delete" ON public.product_variants;
 CREATE POLICY "pv_select" ON public.product_variants FOR SELECT TO public, anon, authenticated USING (true);
 CREATE POLICY "pv_insert" ON public.product_variants FOR INSERT TO public, anon, authenticated WITH CHECK (true);
 CREATE POLICY "pv_update" ON public.product_variants FOR UPDATE TO public, anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "pv_delete" ON public.product_variants FOR DELETE TO public, anon, authenticated USING (true);
 
 -- 8.5 Employees & Partners
 DROP POLICY IF EXISTS "emp_select" ON public.employees;
 DROP POLICY IF EXISTS "emp_insert" ON public.employees;
 DROP POLICY IF EXISTS "emp_update" ON public.employees;
+DROP POLICY IF EXISTS "emp_delete" ON public.employees;
 CREATE POLICY "emp_select" ON public.employees FOR SELECT TO public, anon, authenticated USING (true);
 CREATE POLICY "emp_insert" ON public.employees FOR INSERT TO public, anon, authenticated WITH CHECK (length(trim(name)) > 0);
 CREATE POLICY "emp_update" ON public.employees FOR UPDATE TO public, anon, authenticated USING (true) WITH CHECK (length(trim(name)) > 0);
+CREATE POLICY "emp_delete" ON public.employees FOR DELETE TO public, anon, authenticated USING (true);
 
 DROP POLICY IF EXISTS "ptr_select" ON public.partners;
 DROP POLICY IF EXISTS "ptr_insert" ON public.partners;
 DROP POLICY IF EXISTS "ptr_update" ON public.partners;
+DROP POLICY IF EXISTS "ptr_delete" ON public.partners;
 CREATE POLICY "ptr_select" ON public.partners FOR SELECT TO public, anon, authenticated USING (true);
 CREATE POLICY "ptr_insert" ON public.partners FOR INSERT TO public, anon, authenticated WITH CHECK (length(trim(name)) > 0);
 CREATE POLICY "ptr_update" ON public.partners FOR UPDATE TO public, anon, authenticated USING (true) WITH CHECK (length(trim(name)) > 0);
+CREATE POLICY "ptr_delete" ON public.partners FOR DELETE TO public, anon, authenticated USING (true);
 
 -- 8.6 Bank Accounts
 DROP POLICY IF EXISTS "bnk_select" ON public.bank_accounts;
 DROP POLICY IF EXISTS "bnk_insert" ON public.bank_accounts;
 DROP POLICY IF EXISTS "bnk_update" ON public.bank_accounts;
+DROP POLICY IF EXISTS "bnk_delete" ON public.bank_accounts;
 CREATE POLICY "bnk_select" ON public.bank_accounts FOR SELECT TO public, anon, authenticated USING (true);
 CREATE POLICY "bnk_insert" ON public.bank_accounts FOR INSERT TO public, anon, authenticated WITH CHECK (length(trim(bank_name)) > 0 AND length(trim(account_no)) > 0);
 CREATE POLICY "bnk_update" ON public.bank_accounts FOR UPDATE TO public, anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "bnk_delete" ON public.bank_accounts FOR DELETE TO public, anon, authenticated USING (true);
 
 -- 8.7 Stock Balances
 DROP POLICY IF EXISTS "sb_select" ON public.stock_balances;
@@ -2583,9 +2817,11 @@ CREATE POLICY "sal_update" ON public.salary_records FOR UPDATE TO public, anon, 
 DROP POLICY IF EXISTS "bst_select" ON public.bank_statement_transactions;
 DROP POLICY IF EXISTS "bst_insert" ON public.bank_statement_transactions;
 DROP POLICY IF EXISTS "bst_update" ON public.bank_statement_transactions;
+DROP POLICY IF EXISTS "bst_delete" ON public.bank_statement_transactions;
 CREATE POLICY "bst_select" ON public.bank_statement_transactions FOR SELECT TO public, anon, authenticated USING (true);
 CREATE POLICY "bst_insert" ON public.bank_statement_transactions FOR INSERT TO public, anon, authenticated WITH CHECK (true);
 CREATE POLICY "bst_update" ON public.bank_statement_transactions FOR UPDATE TO public, anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "bst_delete" ON public.bank_statement_transactions FOR DELETE TO public, anon, authenticated USING (true);
 
 DROP POLICY IF EXISTS "brm_select" ON public.bank_reconciliation_matches;
 DROP POLICY IF EXISTS "brm_insert" ON public.bank_reconciliation_matches;

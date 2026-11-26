@@ -445,6 +445,47 @@ runTest("Calculates live company cash balance using paid_amount for partial paym
   assert.equal(statsGlobal.currentBalance, 60000);
 });
 
+runTest("Cash-in-Hand strictly ignores bank statement imports and pure bank transfers", () => {
+  // Using actual logic matching calculateCompanyCurrentBalance in queries.ts
+  function calcCashOnly(transactions: any[], openingBalance: number) {
+    let totalCashIn = 0;
+    let totalCashOut = 0;
+    for (const t of transactions) {
+      if (t.custom_data?.is_statement_imported === true) continue;
+      const paid = Number(t.paid_amount != null ? t.paid_amount : t.amount) || 0;
+      const custom = t.custom_data || {};
+      let cashMoved = 0;
+      if (custom.cash_amount != null) cashMoved = Number(custom.cash_amount) || 0;
+      else if (custom.payment_method === "bank_transfer_only") cashMoved = 0;
+      else cashMoved = Math.max(0, paid - (Number(custom.bank_amount) || 0));
+      if (cashMoved <= 0) continue;
+      if (t.type === "IN") totalCashIn += cashMoved;
+      else totalCashOut += cashMoved;
+    }
+    return {
+      currentBalance: openingBalance + totalCashIn - totalCashOut,
+      totalCashIn,
+      totalCashOut,
+    };
+  }
+
+  const txns = [
+    // Cash Quick Income (+5000 Cash)
+    { type: "IN", amount: 5000, paid_amount: 5000, custom_data: { payment_method: "cash_only", cash_amount: 5000, bank_amount: 0 } },
+    // Split Income (+3000 Cash, +7000 Bank)
+    { type: "IN", amount: 10000, paid_amount: 10000, custom_data: { payment_method: "cash_and_bank", cash_amount: 3000, bank_amount: 7000 } },
+    // Bank-only Quick Expense (0 Cash, 2000 Bank)
+    { type: "OUT", amount: 2000, paid_amount: 2000, custom_data: { payment_method: "bank_transfer_only", cash_amount: 0, bank_amount: 2000 } },
+    // Bank Statement Import (+50000 Bank, 0 Cash)
+    { type: "IN", amount: 50000, paid_amount: 50000, custom_data: { is_statement_imported: true, bank_amount: 50000, cash_amount: 0 } },
+  ];
+
+  const res = calcCashOnly(txns, 1000);
+  assert.equal(res.totalCashIn, 8000);
+  assert.equal(res.totalCashOut, 0);
+  assert.equal(res.currentBalance, 9000);
+});
+
 // =========================================================================
 // SUMMARY
 // =========================================================================

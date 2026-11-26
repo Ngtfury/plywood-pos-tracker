@@ -17,11 +17,11 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  ArrowUpFromLine, PlusCircle, Ban, CheckCircle2
+  ArrowUpFromLine, PlusCircle, Ban, CheckCircle2, Trash2
 } from "lucide-react";
 import type { Voucher, BankAccount } from "@/lib/db/erp";
 import {
-  getVouchers, insertVoucher, getNextVoucherNumber, cancelVoucher, getBankAccounts
+  getVouchers, insertVoucher, getNextVoucherNumber, cancelVoucher, deleteVoucher, getBankAccounts
 } from "@/lib/db/accounting";
 import { getEntities, Entity } from "@/lib/db/queries";
 
@@ -183,6 +183,19 @@ export function PaymentVoucher() {
     }
   };
 
+  const handleDelete = async (v: Voucher) => {
+    if (!window.confirm(`Permanently delete payment voucher ${v.voucher_number}?`)) return;
+    try {
+      setVouchers((prev) => prev.filter((item) => item.id !== v.id));
+      await deleteVoucher(v.id);
+      triggerRefresh();
+      await loadData();
+    } catch (err: any) {
+      alert("Error: " + err.message);
+      await loadData();
+    }
+  };
+
   const totalDisbursed = vouchers.reduce((s, v) => s + (Number(v.total_amount) || 0), 0);
 
   if (loading) {
@@ -310,16 +323,27 @@ export function PaymentVoucher() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      {v.status === "posted" && (
+                      <div className="flex items-center justify-end gap-1">
+                        {v.status === "posted" && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleCancel(v)}
+                            className="h-7 text-xs text-muted-foreground hover:text-amber-400"
+                          >
+                            <Ban className="h-3 w-3 mr-1" /> Cancel
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
-                          size="sm"
-                          onClick={() => handleCancel(v)}
-                          className="h-7 text-xs text-muted-foreground hover:text-rose-400"
+                          size="icon"
+                          onClick={() => handleDelete(v)}
+                          className="h-7 w-7 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                          title="Delete Payment Voucher"
                         >
-                          <Ban className="h-3 w-3 mr-1" /> Cancel
+                          <Trash2 className="h-3.5 w-3.5" />
                         </Button>
-                      )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))

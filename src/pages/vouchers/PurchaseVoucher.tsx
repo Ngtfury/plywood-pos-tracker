@@ -22,7 +22,7 @@ import {
 import type { Voucher, Product, ProductVariant } from "@/lib/db/erp";
 import { getSqftPerSheet } from "@/lib/db/erp";
 import {
-  getVouchers, insertVoucher, getNextVoucherNumber, cancelVoucher,
+  getVouchers, insertVoucher, getNextVoucherNumber, cancelVoucher, deleteVoucher,
 } from "@/lib/db/accounting";
 import { getProducts, getProductVariants } from "@/lib/db/inventory";
 import { getEntities, Entity } from "@/lib/db/queries";
@@ -243,6 +243,19 @@ export function PurchaseVoucher() {
     }
   };
 
+  const handleDeleteVoucher = async (v: Voucher) => {
+    if (!window.confirm(`Permanently delete purchase voucher ${v.voucher_number}? Stock & accounting entries will be reversed cleanly.`)) return;
+    try {
+      setVouchers((prev) => prev.filter((item) => item.id !== v.id));
+      await deleteVoucher(v.id);
+      triggerRefresh();
+      await loadData();
+    } catch (err: any) {
+      alert("Error: " + err.message);
+      await loadData();
+    }
+  };
+
   const totalPurchases = vouchers.reduce((s, v) => s + (Number(v.total_amount) || 0), 0);
   const totalPaid = vouchers.reduce((s, v) => s + (Number(v.paid_amount) || 0), 0);
   const totalOutstanding = vouchers.reduce((s, v) => s + (Number(v.balance_due) || 0), 0);
@@ -379,16 +392,27 @@ export function PurchaseVoucher() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      {v.status === "posted" && (
+                      <div className="flex items-center justify-end gap-1">
+                        {v.status === "posted" && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleCancelVoucher(v)}
+                            className="h-7 text-xs text-muted-foreground hover:text-amber-400"
+                          >
+                            Cancel
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
-                          size="sm"
-                          onClick={() => handleCancelVoucher(v)}
-                          className="h-7 text-xs text-muted-foreground hover:text-rose-400"
+                          size="icon"
+                          onClick={() => handleDeleteVoucher(v)}
+                          className="h-7 w-7 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                          title="Delete Purchase Voucher"
                         >
-                          Cancel
+                          <Trash2 className="h-3.5 w-3.5" />
                         </Button>
-                      )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))

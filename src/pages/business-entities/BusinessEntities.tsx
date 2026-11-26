@@ -13,11 +13,11 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { getBusinessEntities, upsertBusinessEntity, toggleBusinessEntityActive } from "@/lib/db/inventory";
+import { getBusinessEntities, upsertBusinessEntity, toggleBusinessEntityActive, deleteBusinessEntity } from "@/lib/db/inventory";
 import { useStore } from "@/store";
 import type { BusinessEntity } from "@/lib/db/erp";
 import { IosLoadingView, IosSpinner } from "@/components/ui/IosSpinner";
-import { Building2, Plus, Pencil, Power } from "lucide-react";
+import { Building2, Plus, Pencil, Power, Trash2 } from "lucide-react";
 
 const EMPTY_FORM: Partial<BusinessEntity> = {
   name: "",
@@ -100,6 +100,16 @@ export function BusinessEntities() {
     if (!window.confirm(`${e.is_active ? "Deactivate" : "Activate"} "${e.name}"?`)) return;
     await toggleBusinessEntityActive(e.id, !e.is_active);
     triggerRefresh();
+  };
+
+  const handleDelete = async (e: BusinessEntity) => {
+    if (!window.confirm(`Permanently delete "${e.name}"? Linked vouchers or records may also be affected or prevent deletion.`)) return;
+    try {
+      await deleteBusinessEntity(e.id);
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Failed to delete entity: " + (err?.message || err));
+    }
   };
 
   const companies = entities.filter((e) => e.entity_type === "company");
@@ -229,6 +239,15 @@ export function BusinessEntities() {
                             className={`h-8 w-8 ${e.is_active ? "hover:text-rose-400" : "hover:text-emerald-400"} cursor-pointer`}
                           >
                             <Power className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            onClick={() => handleDelete(e)}
+                            title="Delete Entity / Warehouse"
+                            className="h-8 w-8 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
                       </TableCell>

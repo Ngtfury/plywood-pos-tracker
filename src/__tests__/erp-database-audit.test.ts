@@ -306,7 +306,13 @@ function testMasterSchemaIntegrity() {
     'post_quick_transaction_atomic',
     'update_quick_transaction_atomic',
     'delete_transactions_atomic',
-    'delete_bank_account'
+    'delete_bank_account',
+    'delete_bank_statement_transactions_atomic',
+    'delete_voucher_atomic',
+    'delete_journal_entry_atomic',
+    'delete_salary_booking',
+    'delete_production_entry_atomic',
+    'wipe_all_erp_data'
   ];
 
   let missingFuncs: string[] = [];

@@ -277,6 +277,14 @@ export async function cancelVoucher(id: string): Promise<void> {
   throw new Error(rpcErr.message);
 }
 
+export async function deleteVoucher(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error: rpcErr } = await supabase.rpc('delete_voucher_atomic', { p_voucher_id: id });
+  if (!rpcErr) return;
+
+  throw new Error(rpcErr.message);
+}
+
 // ---- Journal Entries ----
 
 export async function getJournalEntries(params: {
@@ -378,6 +386,30 @@ export async function cancelJournalEntry(id: string): Promise<void> {
   throw new Error(rpcErr.message);
 }
 
+export async function deleteJournalEntry(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error: rpcErr } = await supabase.rpc('delete_journal_entry_atomic', { p_journal_id: id });
+  if (!rpcErr) return;
+
+  throw new Error(rpcErr.message);
+}
+
+export async function deleteAccount(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.from('accounts').delete().eq('id', id).eq('is_system', false);
+  if (error) {
+    console.error('Error deleting account:', error);
+    throw error;
+  }
+  await recordAuditLog({
+    entity_type: 'accounts',
+    record_id: id,
+    old_values: null,
+    new_values: { deleted: true },
+    action: 'DELETE',
+  });
+}
+
 // ---- Employees ----
 
 export async function getEmployees(): Promise<Employee[]> {
@@ -416,6 +448,19 @@ export async function upsertEmployee(data: Partial<Employee>, oldData?: Partial<
   return id;
 }
 
+export async function deleteEmployee(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.from('employees').delete().eq('id', id);
+  if (error) throw error;
+  await recordAuditLog({
+    entity_type: 'employees',
+    record_id: id,
+    old_values: null,
+    new_values: { deleted: true },
+    action: 'DELETE',
+  });
+}
+
 // ---- Partners ----
 
 export async function getPartners(): Promise<Partner[]> {
@@ -449,6 +494,19 @@ export async function upsertPartner(data: Partial<Partner>, oldData?: Partial<Pa
   });
 
   return id;
+}
+
+export async function deletePartner(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.from('partners').delete().eq('id', id);
+  if (error) throw error;
+  await recordAuditLog({
+    entity_type: 'partners',
+    record_id: id,
+    old_values: null,
+    new_values: { deleted: true },
+    action: 'DELETE',
+  });
 }
 
 // ---- Bank Accounts ----
@@ -518,18 +576,64 @@ export async function getBankAccounts(businessEntityId?: string): Promise<BankAc
     }
 
     if (!tableError && Array.isArray(rawData)) {
-      return rawData.map((r: any) => ({
-        id: r.id,
-        business_entity_id: r.business_entity_id || undefined,
-        bank_name: r.bank_name || 'Unnamed Bank',
-        account_no: r.account_no || '',
-        branch_name: r.branch_name || r.branch || undefined,
-        ifsc: r.ifsc || undefined,
-        opening_balance: Number(r.opening_balance) || 0,
-        current_balance: Number(r.current_balance != null ? r.current_balance : r.opening_balance) || 0,
-        is_active: r.is_active !== false,
-        business_entity_name: r.business_entities?.name || undefined,
-      }));
+      const bankIds = rawData.map((r: any) => r.id).filter(Boolean);
+      const flowByBank: Record<string, number> = {};
+      for (const bid of bankIds) flowByBank[bid] = 0;
+
+      if (bankIds.length > 0) {
+        try {
+          const [{ data: txns }, { data: vchs }, { data: sals }] = await Promise.all([
+            supabase.from('transactions').select('type, custom_data').not('custom_data->bank_account_id', 'is', null),
+            supabase
+              .from('vouchers')
+              .select('bank_account_id, voucher_type, paid_amount, payment_method, status')
+              .in('bank_account_id', bankIds)
+              .eq('status', 'posted'),
+            supabase
+              .from('salary_records')
+              .select('bank_account_id, paid_amount, payment_method, status')
+              .in('bank_account_id', bankIds),
+          ]);
+
+          for (const t of txns || []) {
+            const bid = t.custom_data?.bank_account_id;
+            const bankAmt = Number(t.custom_data?.bank_amount) || 0;
+            if (!bid || flowByBank[bid] === undefined || bankAmt <= 0) continue;
+            flowByBank[bid] += t.type === 'IN' ? bankAmt : -bankAmt;
+          }
+          for (const v of vchs || []) {
+            if (!v.bank_account_id || flowByBank[v.bank_account_id] === undefined) continue;
+            if (!['bank', 'cheque', 'upi'].includes(v.payment_method || '')) continue;
+            const amt = Number(v.paid_amount) || 0;
+            flowByBank[v.bank_account_id] += (v.voucher_type === 'sales' || v.voucher_type === 'receipt') ? amt : -amt;
+          }
+          for (const s of sals || []) {
+            if (!s.bank_account_id || flowByBank[s.bank_account_id] === undefined) continue;
+            if (!['partial', 'paid'].includes(s.status || '')) continue;
+            if (!['bank', 'cheque', 'upi'].includes(s.payment_method || '')) continue;
+            flowByBank[s.bank_account_id] -= Number(s.paid_amount) || 0;
+          }
+        } catch {
+          // Fallback to stored current_balance if flow query unavailable
+        }
+      }
+
+      return rawData.map((r: any) => {
+        const opBal = Number(r.opening_balance) || 0;
+        const computed = Math.round((opBal + (flowByBank[r.id] || 0)) * 100) / 100;
+        return {
+          id: r.id,
+          business_entity_id: r.business_entity_id || undefined,
+          bank_name: r.bank_name || 'Unnamed Bank',
+          account_no: r.account_no || '',
+          branch_name: r.branch_name || r.branch || undefined,
+          ifsc: r.ifsc || undefined,
+          opening_balance: opBal,
+          current_balance: bankIds.length > 0 ? computed : (Number(r.current_balance != null ? r.current_balance : opBal) || 0),
+          is_active: r.is_active !== false,
+          business_entity_name: r.business_entities?.name || undefined,
+        };
+      });
     } else if (tableError) {
       console.warn('Direct bank_accounts select failed:', tableError.message);
     }
@@ -608,17 +712,143 @@ export async function upsertBankAccount(data: Partial<BankAccount>, oldData?: Pa
   return id;
 }
 
-export async function deleteBankAccount(id: string): Promise<void> {
+export async function getBankAccountBalanceBreakdown(bankAccountId: string): Promise<{
+  openingBalance: number;
+  bankInflow: number;
+  bankOutflow: number;
+  currentBalance: number;
+}> {
+  const supabase = getSupabase();
+  const [{ data: acc }, { data: txns }, { data: vchs }, { data: sals }] = await Promise.all([
+    supabase.from('bank_accounts').select('opening_balance, current_balance').eq('id', bankAccountId).single(),
+    supabase
+      .from('transactions')
+      .select('type, amount, paid_amount, custom_data')
+      .eq('custom_data->>bank_account_id', bankAccountId),
+    supabase
+      .from('vouchers')
+      .select('voucher_type, paid_amount, payment_method, status')
+      .eq('bank_account_id', bankAccountId)
+      .eq('status', 'posted'),
+    supabase
+      .from('salary_records')
+      .select('paid_amount, payment_method, status')
+      .eq('bank_account_id', bankAccountId),
+  ]);
+
+  const openingBalance = Number(acc?.opening_balance) || 0;
+  let bankInflow = 0;
+  let bankOutflow = 0;
+
+  for (const t of txns || []) {
+    const bankAmt = Number(t.custom_data?.bank_amount) || 0;
+    if (bankAmt <= 0) continue;
+    if (t.type === 'IN') bankInflow += bankAmt;
+    else bankOutflow += bankAmt;
+  }
+
+  for (const v of vchs || []) {
+    if (!['bank', 'cheque', 'upi'].includes(v.payment_method || '')) continue;
+    const amt = Number(v.paid_amount) || 0;
+    if (v.voucher_type === 'sales' || v.voucher_type === 'receipt') bankInflow += amt;
+    else bankOutflow += amt;
+  }
+
+  for (const s of sals || []) {
+    if (!['partial', 'paid'].includes(s.status || '')) continue;
+    if (!['bank', 'cheque', 'upi'].includes(s.payment_method || '')) continue;
+    bankOutflow += Number(s.paid_amount) || 0;
+  }
+
+  const currentBalance = Math.round((openingBalance + bankInflow - bankOutflow) * 100) / 100;
+  return {
+    openingBalance: Math.round(openingBalance * 100) / 100,
+    bankInflow: Math.round(bankInflow * 100) / 100,
+    bankOutflow: Math.round(bankOutflow * 100) / 100,
+    currentBalance,
+  };
+}
+
+export async function setBankAccountDesiredCurrentBalance(
+  bankAccountId: string,
+  targetBalance: number
+): Promise<number> {
+  const supabase = getSupabase();
+  const stats = await getBankAccountBalanceBreakdown(bankAccountId);
+  const netFlow = stats.bankInflow - stats.bankOutflow;
+  const newOpening = Math.round((targetBalance - netFlow) * 100) / 100;
+  const roundedTarget = Math.round(targetBalance * 100) / 100;
+
+  const { error } = await supabase
+    .from('bank_accounts')
+    .update({ opening_balance: newOpening, current_balance: roundedTarget })
+    .eq('id', bankAccountId);
+  if (error) throw error;
+
+  try {
+    await supabase.rpc('refresh_bank_account_balance', { p_bank_account_id: bankAccountId });
+  } catch {}
+
+  await recordAuditLog({
+    entity_type: 'bank_accounts',
+    record_id: bankAccountId,
+    old_values: { opening_balance: stats.openingBalance, current_balance: stats.currentBalance },
+    new_values: { opening_balance: newOpening, current_balance: roundedTarget },
+    action: 'UPDATE',
+  });
+
+  return roundedTarget;
+}
+
+export async function addFundsToBankAccountBalance(
+  bankAccountId: string,
+  amountToAdd: number
+): Promise<number> {
+  const supabase = getSupabase();
+  const stats = await getBankAccountBalanceBreakdown(bankAccountId);
+  const newOpening = Math.round((stats.openingBalance + amountToAdd) * 100) / 100;
+  const newCurrent = Math.round((stats.currentBalance + amountToAdd) * 100) / 100;
+
+  const { error } = await supabase
+    .from('bank_accounts')
+    .update({ opening_balance: newOpening, current_balance: newCurrent })
+    .eq('id', bankAccountId);
+  if (error) throw error;
+
+  try {
+    await supabase.rpc('refresh_bank_account_balance', { p_bank_account_id: bankAccountId });
+  } catch {}
+
+  await recordAuditLog({
+    entity_type: 'bank_accounts',
+    record_id: bankAccountId,
+    old_values: { opening_balance: stats.openingBalance, current_balance: stats.currentBalance },
+    new_values: { opening_balance: newOpening, current_balance: newCurrent, added: amountToAdd },
+    action: 'UPDATE',
+  });
+
+  return newCurrent;
+}
+
+export async function deleteBankAccount(id: string, force: boolean = false): Promise<void> {
   const supabase = getSupabase();
 
   // 1. Try atomic delete stored procedure
   const { error: rpcErr } = await supabase.rpc('delete_bank_account', {
     p_bank_account_id: id,
+    p_force: force,
   });
 
   if (!rpcErr) return;
 
-  // 2. If stored procedure is not installed in database, perform client-side history audit & safe delete
+  // Fallback for older 1-arg signature or missing RPC
+  if (!force && rpcErr.code === 'PGRST202') {
+    const { error: legacyErr } = await supabase.rpc('delete_bank_account', {
+      p_bank_account_id: id,
+    });
+    if (!legacyErr) return;
+  }
+
   if (rpcErr.code === 'PGRST202' || rpcErr.message?.includes('not find')) {
     const [txns, vchs, sals, bsts] = await Promise.all([
       supabase.from('transactions').select('id').eq('custom_data->>bank_account_id', id).limit(1),
@@ -633,8 +863,14 @@ export async function deleteBankAccount(id: string): Promise<void> {
       (sals.data && sals.data.length > 0) ||
       (bsts.data && bsts.data.length > 0);
 
-    if (hasHistory) {
-      throw new Error('Bank account has financial history and cannot be deleted. Deactivate it instead.');
+    if (hasHistory && !force) {
+      throw new Error('Bank account has financial history and cannot be deleted. Deactivate or force-delete it instead.');
+    }
+
+    if (hasHistory && force) {
+      await supabase.from('bank_statement_transactions').delete().eq('bank_account_id', id);
+      await supabase.from('vouchers').update({ bank_account_id: null }).eq('bank_account_id', id);
+      await supabase.from('salary_records').update({ bank_account_id: null }).eq('bank_account_id', id);
     }
 
     const { error: delErr } = await supabase.from('bank_accounts').delete().eq('id', id);
@@ -771,6 +1007,17 @@ export async function cancelSalaryBooking(id: string): Promise<void> {
   });
   if (error) {
     console.error('Cancel salary booking failed:', error);
+    throw error;
+  }
+}
+
+export async function deleteSalaryBooking(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.rpc('delete_salary_booking', {
+    p_record_id: id,
+  });
+  if (error) {
+    console.error('Delete salary booking failed:', error);
     throw error;
   }
 }

@@ -5,8 +5,32 @@
 import { getSupabase } from '../supabase';
 import { recordAuditLog } from './audit';
 import type { BankStatementTransaction } from './erp';
-import type { Transaction } from './queries';
 import type { ParsedStatementRow } from '../banking/bankCsvParser';
+
+export interface EnrichedParsedStatementRow extends ParsedStatementRow {
+  categoryId?: string | null;
+  entityId?: string | null;
+  businessEntityId?: string | null;
+  notes?: string | null;
+  skip?: boolean;
+}
+
+function shiftIsoDate(dateStr: string, deltaDays: number): string {
+  const clean = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr;
+  const [y, m, d] = clean.split('-').map(Number);
+  if (!y || !m || !d) return clean;
+  const dt = new Date(Date.UTC(y, m - 1, d + deltaDays));
+  return dt.toISOString().split('T')[0];
+}
+
+function normalizeDateKey(val?: string | null): string {
+  if (!val) return '';
+  if (/^\d{4}-\d{2}-\d{2}/.test(val)) {
+    return val.slice(0, 10);
+  }
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? '' : d.toISOString().split('T')[0];
+}
 
 export async function getBankStatementTransactions(params: {
   bankAccountId?: string;
@@ -48,7 +72,7 @@ export async function getBankStatementTransactions(params: {
     balance: r.balance != null ? r.balance : (r.balance_after != null ? r.balance_after : null),
   }));
 
-  // Fetch matched existing transactions for rows under review or merged
+  // Fetch matched existing transactions (including category & contact/entity) for review/reconciled display
   const duplicateIds = Array.from(
     new Set(
       rows
@@ -61,7 +85,7 @@ export async function getBankStatementTransactions(params: {
   if (duplicateIds.length > 0) {
     const { data: txnData } = await supabase
       .from('transactions')
-      .select('*, categories(name, color)')
+      .select('*, categories(id, name, color), entities(id, name, type)')
       .in('id', duplicateIds);
     if (txnData) {
       for (const t of txnData) {
@@ -80,42 +104,93 @@ export async function getBankStatementTransactions(params: {
 }
 
 /**
- * Duplicate Detection Engine:
- * User requirement: "no need cheque only match the date and the cash"
- * Checks if a transaction already exists on the exact same date with the exact same cash amount and direction.
+ * Cloud Duplicate Detection Engine:
+ * Checks BOTH:
+ *  1) Existing cloud `bank_statement_transactions` for this bank account
+ *     (matching exact date, direction, amount, and particulars/ref or exact cloud entry).
+ *  2) Existing cloud `transactions` matching exact date, cash/bank amount, and direction.
  */
 export async function findDuplicateTransaction(params: {
   bankAccountId: string;
   date: string; // ISO "YYYY-MM-DD"
   amount: number;
   type: 'IN' | 'OUT';
-}): Promise<Transaction | null> {
+  particulars?: string;
+  reference?: string | null;
+}): Promise<{
+  transactionId: string | null;
+  reason: string;
+  source: 'CLOUD_STATEMENT' | 'LEDGER_TXN';
+} | null> {
   const supabase = getSupabase();
+  const targetDate = normalizeDateKey(params.date);
+  const queryStart = shiftIsoDate(targetDate, -1);
+  const queryEnd = shiftIsoDate(targetDate, 1);
 
-  // Search transactions with exact date substring match and matching type
-  // Date timestamp in transactions is e.g. "2026-11-12T12:00:00Z"
-  const dayStart = `${params.date}T00:00:00Z`;
-  const dayEnd = `${params.date}T23:59:59Z`;
+  // 1. Check cloud bank statements already stored for this bank account
+  const { data: existingStmts } = await supabase
+    .from('bank_statement_transactions')
+    .select('id, txn_date, description, reference, reference_no, debit_amount, credit_amount, transaction_id, review_status')
+    .eq('bank_account_id', params.bankAccountId)
+    .gte('txn_date', queryStart)
+    .lte('txn_date', queryEnd);
 
+  if (existingStmts && existingStmts.length > 0) {
+    const cleanParticulars = (params.particulars || '').trim().toLowerCase();
+    const cleanRef = (params.reference || '').trim().toLowerCase();
+
+    for (const st of existingStmts) {
+      const stDate = normalizeDateKey(st.txn_date);
+      if (stDate !== targetDate) continue;
+
+      const stIsOut = Number(st.debit_amount) > 0;
+      const stType: 'IN' | 'OUT' = stIsOut ? 'OUT' : 'IN';
+      if (stType !== params.type) continue;
+
+      const stAmt = stIsOut ? Number(st.debit_amount) : Number(st.credit_amount);
+      if (Math.abs(stAmt - params.amount) >= 0.01) continue;
+
+      const stDesc = (st.description || '').trim().toLowerCase();
+      const stRef = ((st.reference || st.reference_no) || '').trim().toLowerCase();
+
+      const sameParticulars = cleanParticulars && stDesc && stDesc === cleanParticulars;
+      const sameRef = cleanRef && stRef && stRef === cleanRef;
+
+      if (sameParticulars || sameRef || st.review_status !== 'dismissed') {
+        return {
+          transactionId: st.transaction_id || null,
+          source: 'CLOUD_STATEMENT',
+          reason: `Already entered in Cloud Bank Statement (${st.description || 'Bank Entry'} on ${targetDate} for ₹${params.amount.toLocaleString()}${stRef ? `, Ref: ${st.reference || st.reference_no}` : ''})`,
+        };
+      }
+    }
+  }
+
+  // 2. Check existing ledger transactions
   const { data: txns, error } = await supabase
     .from('transactions')
     .select('*')
     .eq('type', params.type)
-    .gte('date', dayStart)
-    .lte('date', dayEnd);
+    .gte('date', `${queryStart}T00:00:00Z`)
+    .lte('date', `${queryEnd}T23:59:59Z`);
 
   if (error || !txns || txns.length === 0) {
     return null;
   }
 
-  // Filter for matching cash amount (within 0.01 tolerance) and matching bank account
   for (const t of txns) {
+    const tDate = normalizeDateKey(t.date);
+    if (tDate !== targetDate) continue;
+
     const txnAmount = Number(t.paid_amount != null ? t.paid_amount : t.amount);
     if (Math.abs(txnAmount - params.amount) < 0.01) {
       const bankId = t.custom_data?.bank_account_id;
-      // If the transaction is linked to this bank account or has general bank payment
       if (!bankId || bankId === params.bankAccountId) {
-        return t as Transaction;
+        return {
+          transactionId: t.id,
+          source: 'LEDGER_TXN',
+          reason: `Matches existing Ledger Transaction #${t.id.slice(-6)} on ${targetDate} for ₹${params.amount.toLocaleString()} (${t.notes || t.description || 'No description'})`,
+        };
       }
     }
   }
@@ -129,10 +204,6 @@ export async function findDuplicateTransaction(params: {
  */
 let cachedBstColumns: Set<string> | null = null;
 
-/**
- * Discovers what columns actually exist in the remote `bank_statement_transactions` table.
- * Adapts dynamically between legacy schema (`balance_after`, `reference_no`) and modern schema (`balance`, `reference`, etc.).
- */
 export async function getAvailableBstColumns(): Promise<Set<string>> {
   if (cachedBstColumns) return cachedBstColumns;
 
@@ -155,7 +226,7 @@ export async function getAvailableBstColumns(): Promise<Set<string>> {
       `,
     });
   } catch {
-    // If exec_sql not present, we will probe the existing schema dynamically
+    // If exec_sql not present, probe existing schema dynamically
   }
 
   const candidateCols = [
@@ -185,7 +256,7 @@ export async function getAvailableBstColumns(): Promise<Set<string>> {
       try {
         const { error } = await supabase
           .from('bank_statement_transactions')
-          .select(col, { head: true })
+          .select(col)
           .limit(1);
         if (!error) {
           available.add(col);
@@ -201,7 +272,6 @@ export async function getAvailableBstColumns(): Promise<Set<string>> {
     return available;
   }
 
-  // Safe fallback to baseline schema
   return new Set([
     'id',
     'bank_account_id',
@@ -216,10 +286,6 @@ export async function getAvailableBstColumns(): Promise<Set<string>> {
   ]);
 }
 
-/**
- * Builds an insert payload for `bank_statement_transactions` containing ONLY columns
- * that actually exist in the remote database schema cache.
- */
 function buildBstPayload(
   data: {
     id: string;
@@ -239,7 +305,7 @@ function buildBstPayload(
   },
   available: Set<string>
 ): Record<string, any> {
-  const dateFormatted = data.txn_date.includes('T') ? data.txn_date.split('T')[0] : data.txn_date;
+  const dateFormatted = normalizeDateKey(data.txn_date);
 
   const row: Record<string, any> = {
     id: data.id,
@@ -252,7 +318,6 @@ function buildBstPayload(
   if (available.has('description')) row.description = data.description || null;
   if (available.has('is_matched')) row.is_matched = data.is_matched;
 
-  // Handle balance vs balance_after
   if (data.balance != null) {
     if (available.has('balance')) {
       row.balance = Number(data.balance);
@@ -261,7 +326,6 @@ function buildBstPayload(
     }
   }
 
-  // Handle reference vs reference_no
   if (data.reference) {
     if (available.has('reference')) {
       row.reference = data.reference;
@@ -289,10 +353,6 @@ function buildBstPayload(
   return row;
 }
 
-/**
- * Inserts a single bank statement entry.
- * Safely populates supported columns without failing on missing schema variants.
- */
 export async function insertBankStatementTransaction(data: {
   bank_account_id: string;
   txn_date: string;
@@ -341,15 +401,63 @@ export async function insertBankStatementTransaction(data: {
   return id;
 }
 
-/**
- * High-Speed Bulk Statement Ingestion Engine with Full Atomic Rollback.
- * 1. Cleans up orphan transactions from previous interrupted imports.
- * 2. Fetches existing transactions across the batch date range.
- * 3. In-memory exact date & cash duplicate identification.
- * 4. Bulk insert of new transactions.
- * 5. Bulk insert of statement rows matching ONLY available schema columns.
- * 6. ATOMIC ROLLBACK: If any step fails, all inserted records are deleted immediately.
- */
+async function refreshBankBalanceWithFallback(bankAccountId: string): Promise<void> {
+  const supabase = getSupabase();
+  try {
+    const { error } = await supabase.rpc('refresh_bank_account_balance', {
+      p_bank_account_id: bankAccountId,
+    });
+    if (!error) return;
+  } catch {
+    // Fallback below
+  }
+
+  // Fallback client recalculation so bank_accounts.current_balance stays updated
+  try {
+    const [{ data: acc }, { data: txns }, { data: vchs }, { data: sals }] = await Promise.all([
+      supabase.from('bank_accounts').select('opening_balance').eq('id', bankAccountId).single(),
+      supabase
+        .from('transactions')
+        .select('type, custom_data')
+        .eq('custom_data->>bank_account_id', bankAccountId),
+      supabase
+        .from('vouchers')
+        .select('voucher_type, paid_amount, payment_method, status')
+        .eq('bank_account_id', bankAccountId)
+        .eq('status', 'posted'),
+      supabase
+        .from('salary_records')
+        .select('paid_amount, payment_method, status')
+        .eq('bank_account_id', bankAccountId),
+    ]);
+
+    if (!acc) return;
+    let bal = Number(acc.opening_balance) || 0;
+    for (const t of txns || []) {
+      const bankAmt = Number(t.custom_data?.bank_amount) || 0;
+      if (bankAmt <= 0) continue;
+      bal += t.type === 'IN' ? bankAmt : -bankAmt;
+    }
+    for (const v of vchs || []) {
+      if (!['bank', 'cheque', 'upi'].includes(v.payment_method || '')) continue;
+      const amt = Number(v.paid_amount) || 0;
+      bal += (v.voucher_type === 'sales' || v.voucher_type === 'receipt') ? amt : -amt;
+    }
+    for (const s of sals || []) {
+      if (!['partial', 'paid'].includes(s.status || '')) continue;
+      if (!['bank', 'cheque', 'upi'].includes(s.payment_method || '')) continue;
+      bal -= Number(s.paid_amount) || 0;
+    }
+
+    await supabase
+      .from('bank_accounts')
+      .update({ current_balance: Math.round(bal * 100) / 100 })
+      .eq('id', bankAccountId);
+  } catch {
+    // Non-blocking
+  }
+}
+
 export interface BatchImportResult {
   totalRows: number;
   autoAddedCount: number;
@@ -362,23 +470,27 @@ export interface BatchImportResult {
 export async function importBankStatementBatch(params: {
   bankAccountId: string;
   businessEntityId?: string | null;
-  rows: ParsedStatementRow[];
+  defaultDepositCategoryId?: string | null;
+  defaultWithdrawalCategoryId?: string | null;
+  defaultEntityId?: string | null;
+  rows: EnrichedParsedStatementRow[];
   importBatch?: string;
 }): Promise<BatchImportResult> {
   const supabase = getSupabase();
+  const activeRows = (params.rows || []).filter((r) => !r.skip);
 
   if (!params.bankAccountId) {
     return {
-      totalRows: params.rows?.length || 0,
+      totalRows: activeRows.length,
       autoAddedCount: 0,
       underReviewCount: 0,
-      skippedCount: params.rows?.length || 0,
+      skippedCount: activeRows.length,
       errorCount: 1,
       errors: ['No bank account selected. Please select or add an active bank account first.'],
     };
   }
 
-  if (!params.rows || params.rows.length === 0) {
+  if (activeRows.length === 0) {
     return {
       totalRows: 0,
       autoAddedCount: 0,
@@ -389,7 +501,7 @@ export async function importBankStatementBatch(params: {
     };
   }
 
-  // 1. Verify bank account exists in DB
+  // 1. Verify bank account exists
   const { data: bAcc, error: bAccErr } = await supabase
     .from('bank_accounts')
     .select('id, bank_name, account_no')
@@ -398,16 +510,16 @@ export async function importBankStatementBatch(params: {
 
   if (bAccErr || !bAcc) {
     return {
-      totalRows: params.rows.length,
+      totalRows: activeRows.length,
       autoAddedCount: 0,
       underReviewCount: 0,
-      skippedCount: params.rows.length,
+      skippedCount: activeRows.length,
       errorCount: 1,
       errors: [`Selected bank account (${params.bankAccountId}) does not exist in the database.`],
     };
   }
 
-  // 2. Proactively clean up any orphan transactions from previous failed imports for this bank account
+  // 2. Clean up orphan transactions from previous failed imports for this bank account
   try {
     const { data: candidates } = await supabase
       .from('transactions')
@@ -431,7 +543,6 @@ export async function importBankStatementBatch(params: {
       const trueOrphanIds = candidateIds.filter((id) => !linkedIds.has(id));
 
       if (trueOrphanIds.length > 0) {
-        console.info(`Cleaning up ${trueOrphanIds.length} orphan transactions from previous failed imports...`);
         await supabase.from('transactions').delete().in('id', trueOrphanIds);
       }
     }
@@ -439,57 +550,52 @@ export async function importBankStatementBatch(params: {
     console.warn('Orphan transaction cleanup warning:', cleanErr);
   }
 
-  // 3. Inspect available columns in bank_statement_transactions
+  // 3. Inspect available columns & categories
   const availableCols = await getAvailableBstColumns();
-
-  // 4. Discover available categories (prefer cat_bank_deposit / cat_bank_charges, fallback to cat_sales / cat_misc)
   const { data: catList } = await supabase.from('categories').select('id');
   const catSet = new Set((catList || []).map((c) => c.id));
-  const depositCat = catSet.has('cat_bank_deposit')
-    ? 'cat_bank_deposit'
-    : catSet.has('cat_sales')
-    ? 'cat_sales'
-    : (catList?.[0]?.id || null);
-  const chargesCat = catSet.has('cat_bank_charges')
-    ? 'cat_bank_charges'
-    : catSet.has('cat_misc')
-    ? 'cat_misc'
-    : (catList?.[0]?.id || null);
+  const fallbackDepositCat =
+    (params.defaultDepositCategoryId && catSet.has(params.defaultDepositCategoryId) && params.defaultDepositCategoryId) ||
+    (catSet.has('cat_bank_deposit') ? 'cat_bank_deposit' : catSet.has('cat_sales') ? 'cat_sales' : (catList?.[0]?.id || null));
+  const fallbackChargesCat =
+    (params.defaultWithdrawalCategoryId && catSet.has(params.defaultWithdrawalCategoryId) && params.defaultWithdrawalCategoryId) ||
+    (catSet.has('cat_bank_charges') ? 'cat_bank_charges' : catSet.has('cat_misc') ? 'cat_misc' : (catList?.[0]?.id || null));
 
-  // 5. Query existing transactions in date range for duplicate identification
-  const sortedDates = params.rows
-    .map((r) => (r.date.includes('T') ? r.date.split('T')[0] : r.date))
-    .filter(Boolean)
-    .sort();
-  const minDate = sortedDates[0] || new Date().toISOString().split('T')[0];
-  const maxDate = sortedDates[sortedDates.length - 1] || minDate;
+  // 4. Query existing CLOUD records BEFORE batch insertion (does NOT flag intra-file rows against each other!)
+  const sortedDates = activeRows.map((r) => normalizeDateKey(r.date)).filter(Boolean).sort();
+  const minDate = shiftIsoDate(sortedDates[0] || new Date().toISOString().split('T')[0], -1);
+  const maxDate = shiftIsoDate(sortedDates[sortedDates.length - 1] || minDate, 1);
 
-  const { data: existingTxns, error: txnsErr } = await supabase
-    .from('transactions')
-    .select('id, type, amount, paid_amount, total_amount, date, description, notes, custom_data')
-    .gte('date', `${minDate}T00:00:00Z`)
-    .lte('date', `${maxDate}T23:59:59Z`);
+  const [{ data: existingCloudStmts }, { data: existingTxns }] = await Promise.all([
+    supabase
+      .from('bank_statement_transactions')
+      .select('id, txn_date, description, reference, reference_no, debit_amount, credit_amount, transaction_id, review_status')
+      .eq('bank_account_id', params.bankAccountId)
+      .gte('txn_date', minDate)
+      .lte('txn_date', maxDate),
+    supabase
+      .from('transactions')
+      .select('id, type, amount, paid_amount, total_amount, date, description, notes, custom_data')
+      .gte('date', `${minDate}T00:00:00Z`)
+      .lte('date', `${maxDate}T23:59:59Z`),
+  ]);
 
-  if (txnsErr) {
-    console.warn('Error fetching transactions for duplicate matching:', txnsErr);
-  }
-
+  const cloudStmtsList = existingCloudStmts || [];
   const existingList = existingTxns || [];
-  const usedTxnIds = new Set<string>();
 
   const txnsToInsert: any[] = [];
   const stmtRawRowsToInsert: any[] = [];
 
   let autoAddedCount = 0;
   let underReviewCount = 0;
-  let skippedCount = 0;
+  let skippedCount = (params.rows || []).length - activeRows.length;
 
   const batchTimestamp = Date.now();
   const batchId = params.importBatch || `import_${batchTimestamp}`;
 
-  for (let i = 0; i < params.rows.length; i++) {
-    const row = params.rows[i];
-    const formattedDate = row.date.includes('T') ? row.date.split('T')[0] : row.date;
+  for (let i = 0; i < activeRows.length; i++) {
+    const row = activeRows[i];
+    const formattedDate = normalizeDateKey(row.date);
     const isOut = row.withdrawals > 0;
     const type: 'IN' | 'OUT' = isOut ? 'OUT' : 'IN';
     const cashAmount = isOut ? row.withdrawals : row.deposits;
@@ -499,28 +605,56 @@ export async function importBankStatementBatch(params: {
       continue;
     }
 
-    // Match existing transaction on exact date and cash amount
-    // User requirement: "no need cheque only match the date and the cash"
+    const rowParticulars = (row.particulars || '').trim().toLowerCase();
+    const rowRef = (row.chequeNo || '').trim().toLowerCase();
+
+    // Check 1: Exact or same-date/amount already present in CLOUD `bank_statement_transactions`
+    const matchedCloudStmt = cloudStmtsList.find((st) => {
+      const stDate = normalizeDateKey(st.txn_date);
+      if (stDate !== formattedDate) return false;
+      const stIsOut = Number(st.debit_amount) > 0;
+      const stType: 'IN' | 'OUT' = stIsOut ? 'OUT' : 'IN';
+      if (stType !== type) return false;
+      const stAmt = stIsOut ? Number(st.debit_amount) : Number(st.credit_amount);
+      if (Math.abs(stAmt - cashAmount) >= 0.01) return false;
+      if (st.review_status === 'dismissed') {
+        const stDesc = (st.description || '').trim().toLowerCase();
+        const stRef = ((st.reference || st.reference_no) || '').trim().toLowerCase();
+        return (rowParticulars && stDesc === rowParticulars) || (rowRef && stRef === rowRef);
+      }
+      return true;
+    });
+
+    // Check 2: Existing ledger transaction on exact same date & amount
     const matchedTxn = existingList.find((t) => {
       if (t.type !== type) return false;
-      const tDate = t.date ? (t.date.includes('T') ? t.date.split('T')[0] : t.date) : '';
+      const tDate = normalizeDateKey(t.date);
       if (tDate !== formattedDate) return false;
       const tAmt = Number(t.paid_amount != null ? t.paid_amount : t.amount);
       if (Math.abs(tAmt - cashAmount) >= 0.01) return false;
 
       const bId = t.custom_data?.bank_account_id;
       if (bId && bId !== params.bankAccountId) return false;
-
       return true;
     });
 
     const stmtId = `bst_${batchTimestamp}_${i}_${Math.floor(Math.random() * 1000)}`;
     const ref = row.chequeNo || null;
     const bal = row.balance != null ? row.balance : null;
+    const rowCategory =
+      (row.categoryId && catSet.has(row.categoryId) ? row.categoryId : null) ||
+      (type === 'IN' ? fallbackDepositCat : fallbackChargesCat);
+    const rowEntityId = row.entityId !== undefined ? (row.entityId || null) : (params.defaultEntityId || null);
+    const rowBizEntityId = row.businessEntityId !== undefined ? (row.businessEntityId || null) : (params.businessEntityId || null);
+    const rowNotes = row.notes?.trim()
+      ? `${row.notes.trim()}${row.particulars ? ` (${row.particulars})` : ''}`
+      : `Bank Statement: ${row.particulars || ''}`;
 
-    if (matchedTxn && !usedTxnIds.has(matchedTxn.id)) {
-      usedTxnIds.add(matchedTxn.id);
+    if (matchedCloudStmt || matchedTxn) {
       underReviewCount++;
+      const reason = matchedCloudStmt
+        ? `Already entered in Cloud Bank Statement (${matchedCloudStmt.description || 'Bank Entry'} on ${formattedDate} for ₹${cashAmount.toLocaleString()}${(matchedCloudStmt.reference || matchedCloudStmt.reference_no) ? `, Ref: ${matchedCloudStmt.reference || matchedCloudStmt.reference_no}` : ''})`
+        : `Matches existing Ledger Transaction #${matchedTxn!.id.slice(-6)} on ${formattedDate} for ₹${cashAmount.toLocaleString()} (${matchedTxn!.notes || matchedTxn!.description || 'No description'})`;
 
       stmtRawRowsToInsert.push({
         id: stmtId,
@@ -532,8 +666,8 @@ export async function importBankStatementBatch(params: {
         balance: bal,
         reference: ref,
         import_batch: batchId,
-        potential_duplicate_id: matchedTxn.id,
-        duplicate_reason: `Found existing transaction #${matchedTxn.id.slice(-6)} on ${formattedDate} for ₹${cashAmount.toLocaleString()} (${matchedTxn.notes || matchedTxn.description || 'No description'})`,
+        potential_duplicate_id: matchedCloudStmt?.transaction_id || matchedTxn?.id || null,
+        duplicate_reason: reason,
         review_status: 'under_review',
         is_matched: false,
       });
@@ -551,12 +685,12 @@ export async function importBankStatementBatch(params: {
         credit_status: 'PAID',
         due_date: null,
         date: `${formattedDate}T12:00:00Z`,
-        category_id: type === 'IN' ? depositCat : chargesCat,
-        entity_id: null,
+        category_id: rowCategory,
+        entity_id: rowEntityId,
         product_id: null,
         quantity: null,
         description: row.particulars || 'Bank Transaction',
-        notes: `Bank Statement: ${row.particulars || ''}`,
+        notes: rowNotes,
         reference: ref,
         custom_data: {
           payment_method: 'bank_transfer_only',
@@ -565,9 +699,9 @@ export async function importBankStatementBatch(params: {
           cash_amount: 0,
           payment_reference: ref,
           is_statement_imported: true,
-          business_entity_id: params.businessEntityId || null,
+          business_entity_id: rowBizEntityId,
         },
-        business_entity_id: params.businessEntityId || null,
+        business_entity_id: rowBizEntityId,
       });
 
       stmtRawRowsToInsert.push({
@@ -587,25 +721,19 @@ export async function importBankStatementBatch(params: {
     }
   }
 
-  // Filter statement payloads to match ONLY available columns in the database
   const stmtRowsToInsert = stmtRawRowsToInsert.map((r) => buildBstPayload(r, availableCols));
-
-  // 6. ATOMIC INSERTION WITH AUTOMATIC ROLLBACK
-  // User Requirement: "also if an error occurs dont insert it to the database"
   const insertedTxnIds: string[] = [];
   const insertedStmtIds: string[] = [];
   const CHUNK_SIZE = 100;
 
   try {
-    // 6.1 Insert Transactions
     if (txnsToInsert.length > 0) {
       for (let c = 0; c < txnsToInsert.length; c += CHUNK_SIZE) {
         const chunk = txnsToInsert.slice(c, c + CHUNK_SIZE);
         const { error: insErr } = await supabase.from('transactions').insert(chunk);
         if (insErr) {
-          console.error('Bulk transaction insert error:', insErr);
           if (insErr.message?.includes('category') || insErr.code === '23503') {
-            const fallbackChunk = chunk.map((t) => ({ ...t, category_id: null }));
+            const fallbackChunk = chunk.map((t) => ({ ...t, category_id: null, entity_id: null }));
             const { error: retryErr } = await supabase.from('transactions').insert(fallbackChunk);
             if (retryErr) {
               throw new Error(`Transactions insert failed: ${retryErr.message}`);
@@ -621,13 +749,11 @@ export async function importBankStatementBatch(params: {
       }
     }
 
-    // 6.2 Insert Bank Statement Rows
     if (stmtRowsToInsert.length > 0) {
       for (let c = 0; c < stmtRowsToInsert.length; c += CHUNK_SIZE) {
         const chunk = stmtRowsToInsert.slice(c, c + CHUNK_SIZE);
         const { error: stmtErr } = await supabase.from('bank_statement_transactions').insert(chunk);
         if (stmtErr) {
-          console.error('Bulk bank_statement_transactions insert error:', stmtErr);
           throw new Error(`Bank statement rows insert failed: ${stmtErr.message}`);
         } else {
           insertedStmtIds.push(...chunk.map((r) => r.id));
@@ -635,35 +761,22 @@ export async function importBankStatementBatch(params: {
       }
     }
   } catch (operationErr: any) {
-    // ATOMIC ROLLBACK: Delete any created records across both tables!
     console.warn('Import failed. Rolling back all created records...');
     if (insertedTxnIds.length > 0) {
       try {
         await supabase.from('transactions').delete().in('id', insertedTxnIds);
-      } catch (rbTxnErr) {
-        console.error('Rollback of transactions failed:', rbTxnErr);
-      }
+      } catch {}
     }
     if (insertedStmtIds.length > 0) {
       try {
         await supabase.from('bank_statement_transactions').delete().in('id', insertedStmtIds);
-      } catch (rbStmtErr) {
-        console.error('Rollback of bank statement rows failed:', rbStmtErr);
-      }
+      } catch {}
     }
     throw operationErr;
   }
 
-  // 7. Recalculate Bank Account Balance via RPC
-  try {
-    await supabase.rpc('refresh_bank_account_balance', {
-      p_bank_account_id: params.bankAccountId,
-    });
-  } catch (refreshErr: any) {
-    console.warn('Could not refresh bank account balance via RPC:', refreshErr?.message);
-  }
+  await refreshBankBalanceWithFallback(params.bankAccountId);
 
-  // 8. Record Audit Log
   await recordAuditLog({
     entity_type: 'bank_statement_transactions',
     record_id: batchId,
@@ -689,13 +802,12 @@ export async function importBankStatementBatch(params: {
   };
 }
 
-/**
- * Imports a statement row, automatically creating a transaction if unique,
- * or flagging it under review if a matching date & cash transaction already exists.
- */
 export async function importBankStatementRow(params: {
   bankAccountId: string;
   businessEntityId?: string | null;
+  categoryId?: string | null;
+  entityId?: string | null;
+  notes?: string | null;
   date: string; // "YYYY-MM-DD"
   particulars: string;
   chequeNo?: string | null;
@@ -707,24 +819,24 @@ export async function importBankStatementRow(params: {
   statementId: string;
   status: 'auto_added' | 'under_review';
   transactionId?: string;
-  duplicateId?: string;
+  duplicateId?: string | null;
   duplicateReason?: string;
 }> {
   const supabase = getSupabase();
   const type: 'IN' | 'OUT' = params.withdrawals > 0 ? 'OUT' : 'IN';
   const cashAmount = params.withdrawals > 0 ? params.withdrawals : params.deposits;
-  const formattedDate = params.date.includes('T') ? params.date.split('T')[0] : params.date;
+  const formattedDate = normalizeDateKey(params.date);
 
-  // 1. Check for duplicate transaction matching exact date and cash amount
-  const duplicateTxn = await findDuplicateTransaction({
+  const duplicate = await findDuplicateTransaction({
     bankAccountId: params.bankAccountId,
     date: formattedDate,
     amount: cashAmount,
     type,
+    particulars: params.particulars,
+    reference: params.chequeNo,
   });
 
-  if (duplicateTxn) {
-    const reason = `Found existing transaction #${duplicateTxn.id.slice(-6)} on ${formattedDate} for ₹${cashAmount.toLocaleString()} (${duplicateTxn.notes || duplicateTxn.description || 'No description'})`;
+  if (duplicate) {
     const stmtId = await insertBankStatementTransaction({
       bank_account_id: params.bankAccountId,
       txn_date: formattedDate,
@@ -734,22 +846,21 @@ export async function importBankStatementRow(params: {
       balance: params.balance != null ? params.balance : undefined,
       reference: params.chequeNo,
       import_batch: params.importBatch,
-      potential_duplicate_id: duplicateTxn.id,
-      duplicate_reason: reason,
+      potential_duplicate_id: duplicate.transactionId,
+      duplicate_reason: duplicate.reason,
       review_status: 'under_review',
     });
 
     return {
       statementId: stmtId,
       status: 'under_review',
-      duplicateId: duplicateTxn.id,
-      duplicateReason: reason,
+      duplicateId: duplicate.transactionId,
+      duplicateReason: duplicate.reason,
     };
   }
 
-  // 2. No duplicate found -> Automatically create transaction in POS / ERP transactions ledger
   const txnId = `txn_bank_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const defaultCategory = type === 'IN' ? 'cat_bank_deposit' : 'cat_bank_charges';
+  const defaultCategory = params.categoryId || (type === 'IN' ? 'cat_bank_deposit' : 'cat_bank_charges');
 
   const newTxnPayload = {
     id: txnId,
@@ -762,11 +873,11 @@ export async function importBankStatementRow(params: {
     due_date: null,
     date: `${formattedDate}T12:00:00Z`,
     category_id: defaultCategory,
-    entity_id: null,
+    entity_id: params.entityId || null,
     product_id: null,
     quantity: null,
     description: params.particulars,
-    notes: `Bank Statement: ${params.particulars}`,
+    notes: params.notes?.trim() ? params.notes.trim() : `Bank Statement: ${params.particulars}`,
     reference: params.chequeNo || null,
     custom_data: {
       payment_method: 'bank_transfer_only',
@@ -785,16 +896,16 @@ export async function importBankStatementRow(params: {
   });
 
   if (txnErr) {
-    console.error('Failed to auto-create transaction for bank statement row:', txnErr);
-    // If category does not exist, fallback to general categories
-    newTxnPayload.category_id = type === 'IN' ? 'cat_sales' : 'cat_misc';
+    if (!params.categoryId) {
+      newTxnPayload.category_id = type === 'IN' ? 'cat_sales' : 'cat_misc';
+    }
     const { error: retryErr } = await supabase.rpc('post_quick_transaction_atomic', {
       p_transaction: newTxnPayload,
     });
     if (retryErr) {
-      console.warn('Fallback to general category failed, inserting transaction directly:', retryErr);
       newTxnPayload.category_id = null as any;
-      await supabase.from('transactions').insert([newTxnPayload]);
+      const { error: insErr } = await supabase.from('transactions').insert([newTxnPayload]);
+      if (insErr) throw insErr;
     }
   }
 
@@ -811,9 +922,7 @@ export async function importBankStatementRow(params: {
     review_status: 'auto_added',
   });
 
-  try {
-    await supabase.rpc('refresh_bank_account_balance', { p_bank_account_id: params.bankAccountId });
-  } catch {}
+  await refreshBankBalanceWithFallback(params.bankAccountId);
 
   return {
     statementId: stmtId,
@@ -822,11 +931,6 @@ export async function importBankStatementRow(params: {
   };
 }
 
-/**
- * Merge / Link an under-review statement row with an existing transaction.
- * Confirms that the statement entry is the bank proof of the existing transaction.
- * No duplicate transaction is created!
- */
 export async function mergeStatementWithTransaction(
   statementId: string,
   transactionId: string
@@ -848,19 +952,20 @@ export async function mergeStatementWithTransaction(
   }
 }
 
-/**
- * Approves an under-review statement row as a genuine new transaction.
- * Creates the transaction in the system and marks the statement row as auto_added.
- */
 export async function approveDuplicateAsNewTransaction(
   statement: BankStatementTransaction,
-  businessEntityId?: string | null
+  businessEntityId?: string | null,
+  overrides?: {
+    categoryId?: string | null;
+    entityId?: string | null;
+    notes?: string | null;
+  }
 ): Promise<string> {
   const supabase = getSupabase();
   const type: 'IN' | 'OUT' = statement.debit_amount > 0 ? 'OUT' : 'IN';
   const cashAmount = statement.debit_amount > 0 ? statement.debit_amount : statement.credit_amount;
   const txnId = `txn_bank_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const defaultCategory = type === 'IN' ? 'cat_bank_deposit' : 'cat_bank_charges';
+  const defaultCategory = overrides?.categoryId || (type === 'IN' ? 'cat_bank_deposit' : 'cat_bank_charges');
 
   const newTxnPayload = {
     id: txnId,
@@ -873,11 +978,11 @@ export async function approveDuplicateAsNewTransaction(
     due_date: null,
     date: statement.txn_date.includes('T') ? statement.txn_date : `${statement.txn_date}T12:00:00Z`,
     category_id: defaultCategory,
-    entity_id: null,
+    entity_id: overrides?.entityId || null,
     product_id: null,
     quantity: null,
     description: statement.description || 'Bank Transaction',
-    notes: `Bank Statement: ${statement.description || ''}`,
+    notes: overrides?.notes?.trim() ? overrides.notes.trim() : `Bank Statement: ${statement.description || ''}`,
     reference: statement.reference || statement.reference_no || null,
     custom_data: {
       payment_method: 'bank_transfer_only',
@@ -897,9 +1002,13 @@ export async function approveDuplicateAsNewTransaction(
 
   if (txnErr) {
     newTxnPayload.category_id = type === 'IN' ? 'cat_sales' : 'cat_misc';
-    await supabase.rpc('post_quick_transaction_atomic', {
+    const { error: retryErr } = await supabase.rpc('post_quick_transaction_atomic', {
       p_transaction: newTxnPayload,
     });
+    if (retryErr) {
+      newTxnPayload.category_id = null as any;
+      await supabase.from('transactions').insert([newTxnPayload]);
+    }
   }
 
   const { error: stmtErr } = await supabase
@@ -914,16 +1023,11 @@ export async function approveDuplicateAsNewTransaction(
 
   if (stmtErr) throw stmtErr;
 
-  try {
-    await supabase.rpc('refresh_bank_account_balance', { p_bank_account_id: statement.bank_account_id });
-  } catch {}
+  await refreshBankBalanceWithFallback(statement.bank_account_id);
 
   return txnId;
 }
 
-/**
- * Dismisses an under-review statement row (skips adding to transactions).
- */
 export async function dismissStatement(statementId: string): Promise<void> {
   const supabase = getSupabase();
   const { error } = await supabase
@@ -940,13 +1044,20 @@ export async function dismissStatement(statementId: string): Promise<void> {
 export async function updateBankStatementTransaction(
   id: string,
   data: Partial<BankStatementTransaction>,
-  oldData?: Partial<BankStatementTransaction>
+  oldData?: Partial<BankStatementTransaction>,
+  linkedTxnUpdates?: {
+    transactionId?: string | null;
+    categoryId?: string | null;
+    entityId?: string | null;
+    businessEntityId?: string | null;
+    notes?: string | null;
+  }
 ): Promise<void> {
   const supabase = getSupabase();
   const available = await getAvailableBstColumns();
   const updatePayload: Record<string, any> = {};
   if (data.txn_date !== undefined) {
-    updatePayload.txn_date = data.txn_date.includes('T') ? data.txn_date.split('T')[0] : data.txn_date;
+    updatePayload.txn_date = normalizeDateKey(data.txn_date);
   }
   if (data.description !== undefined && available.has('description')) {
     updatePayload.description = data.description || null;
@@ -970,12 +1081,113 @@ export async function updateBankStatementTransaction(
     throw error;
   }
 
+  // Sync changes to linked transaction if present
+  const linkedTxnId = linkedTxnUpdates?.transactionId || oldData?.transaction_id;
+  if (linkedTxnId) {
+    const debit = Number(data.debit_amount ?? oldData?.debit_amount ?? 0);
+    const credit = Number(data.credit_amount ?? oldData?.credit_amount ?? 0);
+    const type: 'IN' | 'OUT' = debit > 0 ? 'OUT' : 'IN';
+    const amount = debit > 0 ? debit : credit;
+    const formattedDate = normalizeDateKey(data.txn_date || oldData?.txn_date);
+
+    const { data: existingTxn } = await supabase
+      .from('transactions')
+      .select('custom_data')
+      .eq('id', linkedTxnId)
+      .maybeSingle();
+
+    const mergedCustomData = {
+      ...(existingTxn?.custom_data || {}),
+      bank_amount: amount,
+      cash_amount: 0,
+      payment_method: 'bank_transfer_only',
+      payment_reference: data.reference ?? oldData?.reference ?? null,
+      business_entity_id: linkedTxnUpdates?.businessEntityId ?? existingTxn?.custom_data?.business_entity_id ?? null,
+    };
+
+    const txnUpdate: Record<string, any> = {
+      type,
+      amount,
+      total_amount: amount,
+      paid_amount: amount,
+      date: formattedDate ? `${formattedDate}T12:00:00Z` : undefined,
+      description: data.description ?? oldData?.description ?? null,
+      reference: data.reference ?? oldData?.reference ?? null,
+      custom_data: mergedCustomData,
+    };
+    if (linkedTxnUpdates?.categoryId !== undefined) txnUpdate.category_id = linkedTxnUpdates.categoryId || null;
+    if (linkedTxnUpdates?.entityId !== undefined) txnUpdate.entity_id = linkedTxnUpdates.entityId || null;
+    if (linkedTxnUpdates?.businessEntityId !== undefined) txnUpdate.business_entity_id = linkedTxnUpdates.businessEntityId || null;
+    if (linkedTxnUpdates?.notes !== undefined) txnUpdate.notes = linkedTxnUpdates.notes || null;
+
+    await supabase.from('transactions').update(txnUpdate).eq('id', linkedTxnId);
+  }
+
+  const bankId = oldData?.bank_account_id;
+  if (bankId) {
+    await refreshBankBalanceWithFallback(bankId);
+  }
+
   await recordAuditLog({
     entity_type: 'bank_statement_transactions',
     record_id: id,
     old_values: oldData,
-    new_values: updatePayload,
+    new_values: { ...updatePayload, ...linkedTxnUpdates },
     action: 'UPDATE',
+  });
+}
+
+export async function deleteBankStatementTransactions(
+  ids: string[],
+  deleteLinkedAutoTxns: boolean = true
+): Promise<void> {
+  if (!ids || ids.length === 0) return;
+  const supabase = getSupabase();
+
+  // Fetch metadata first so we can refresh impacted bank balances & audit log
+  const { data: stmts } = await supabase
+    .from('bank_statement_transactions')
+    .select('id, bank_account_id, transaction_id, review_status')
+    .in('id', ids);
+
+  const bankIds = Array.from(new Set((stmts || []).map((s: any) => s.bank_account_id).filter(Boolean)));
+
+  const { error: rpcErr } = await supabase.rpc('delete_bank_statement_transactions_atomic', {
+    p_ids: ids,
+    p_delete_linked_auto_txns: deleteLinkedAutoTxns,
+  });
+
+  if (rpcErr) {
+    // Fallback if RPC not yet installed
+    if (rpcErr.code === 'PGRST202' || rpcErr.message?.includes('not find')) {
+      const autoTxnIds = deleteLinkedAutoTxns
+        ? (stmts || [])
+            .filter((s: any) => s.transaction_id && s.review_status === 'auto_added')
+            .map((s: any) => s.transaction_id)
+        : [];
+
+      await supabase.from('bank_reconciliation_matches').delete().in('bank_statement_txn_id', ids);
+      const { error: delErr } = await supabase.from('bank_statement_transactions').delete().in('id', ids);
+      if (delErr) throw delErr;
+
+      if (autoTxnIds.length > 0) {
+        await supabase.from('transactions').delete().in('id', autoTxnIds);
+      }
+    } else {
+      throw new Error(rpcErr.message);
+    }
+  }
+
+  for (const bankId of bankIds) {
+    await refreshBankBalanceWithFallback(bankId);
+  }
+
+  await recordAuditLog({
+    entity_type: 'bank_statement_transactions',
+    record_id: ids.join(','),
+    old_values: stmts,
+    new_values: { deleted_ids: ids, delete_linked_auto_txns: deleteLinkedAutoTxns },
+    action: 'DELETE',
   });
 }
 
@@ -1015,4 +1227,3 @@ export async function unmatchBankTransaction(bankStatementTxnId: string): Promis
   await supabase.from('bank_reconciliation_matches').delete().eq('bank_statement_txn_id', bankStatementTxnId);
   await supabase.from('bank_statement_transactions').update({ is_matched: false }).eq('id', bankStatementTxnId);
 }
-

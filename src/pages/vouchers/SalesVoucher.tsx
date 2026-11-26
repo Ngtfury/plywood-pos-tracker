@@ -26,7 +26,7 @@ import {
   GST_STATES, getStateFromGstin,
 } from "@/lib/db/erp";
 import {
-  getVouchers, insertVoucher, getNextVoucherNumber, cancelVoucher,
+  getVouchers, insertVoucher, getNextVoucherNumber, cancelVoucher, deleteVoucher,
   getBankAccounts, getVoucherWithLines, getBusinessEntities,
 } from "@/lib/db/accounting";
 import { getProducts, getProductVariants } from "@/lib/db/inventory";
@@ -513,6 +513,19 @@ export function SalesVoucher() {
     }
   };
 
+  const handleDelete = async (v: Voucher) => {
+    if (!confirm(`Permanently delete sales voucher ${v.voucher_number}? Stock & accounting entries will be reversed cleanly.`)) return;
+    try {
+      setVouchers((prev) => prev.filter((item) => item.id !== v.id));
+      await deleteVoucher(v.id);
+      triggerRefresh();
+      await loadVouchers();
+    } catch (err: any) {
+      alert("Error deleting voucher: " + (err?.message || String(err)));
+      await loadVouchers();
+    }
+  };
+
   const handleOpenPrint = async (voucherId: string) => {
     setLoadingPrint(true);
     setPrintModalOpen(true);
@@ -757,11 +770,20 @@ export function SalesVoucher() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="text-rose-500 hover:text-rose-600 h-7 px-2"
+                            className="text-amber-500 hover:text-amber-600 h-7 px-2"
                             title="Cancel Voucher"
                             onClick={() => handleCancel(v.id)}
                           >
                             <XCircle className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-rose-500 hover:text-rose-600 h-7 px-2"
+                            title="Delete Voucher"
+                            onClick={() => handleDelete(v)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
                       </TableCell>

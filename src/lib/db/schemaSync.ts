@@ -346,6 +346,19 @@ export async function checkSchemaHealth(): Promise<SchemaHealthResult> {
     missingFunctions.push('update_salary_booking');
   }
 
+  // Check delete_bank_statement_transactions_atomic (0-row no-op check triggers PGRST202 if outdated schema)
+  try {
+    const { error: bstErr } = await supabase.rpc('delete_bank_statement_transactions_atomic', {
+      p_ids: [],
+      p_delete_linked_auto_txns: true,
+    });
+    if (bstErr && (bstErr.code === 'PGRST202' || bstErr.message?.includes('not find'))) {
+      missingFunctions.push('delete_bank_statement_transactions_atomic');
+    }
+  } catch {
+    missingFunctions.push('delete_bank_statement_transactions_atomic');
+  }
+
   const isFit = missingTables.length === 0 && missingColumns.length === 0 && missingFunctions.length === 0;
 
   let summary = `Schema is fully up to date (${verifiedTablesCount}/${totalTables} tables, ${verifiedColumnsCount}/${totalColumns} columns verified).`;

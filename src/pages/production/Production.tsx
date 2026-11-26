@@ -17,7 +17,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  Factory, PlusCircle, AlertCircle, Layers, Calendar, Ban, CheckCircle2
+  Factory, PlusCircle, AlertCircle, Layers, Calendar, Ban, CheckCircle2, Trash2
 } from "lucide-react";
 import type { ProductionEntry, Product, ProductVariant, StockBalance } from "@/lib/db/erp";
 import { getSqftPerSheet } from "@/lib/db/erp";
@@ -25,6 +25,7 @@ import {
   getProductionEntries,
   postProductionEntry,
   cancelProductionEntry,
+  deleteProductionEntry,
 } from "@/lib/db/production";
 import {
   getProducts,
@@ -205,6 +206,18 @@ export function Production() {
     }
   };
 
+  const handleDeleteEntry = async (entry: ProductionEntry) => {
+    if (!window.confirm(`Permanently delete production entry on ${new Date(entry.production_date).toLocaleDateString()}? Stock quantities will be reversed automatically if still posted.`)) {
+      return;
+    }
+    try {
+      await deleteProductionEntry(entry.id);
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Error deleting entry: " + err.message);
+    }
+  };
+
   // Aggregates
   const totalSheetsProduced = useMemo(() => {
     return entries
@@ -368,17 +381,28 @@ export function Production() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      {item.status === "posted" && (
+                      <div className="flex items-center justify-end gap-1">
+                        {item.status === "posted" && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleCancelEntry(item)}
+                            className="h-7 text-xs text-muted-foreground hover:text-amber-400"
+                            title="Cancel Batch"
+                          >
+                            <Ban className="h-3.5 w-3.5 mr-1" /> Cancel
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
-                          size="sm"
-                          onClick={() => handleCancelEntry(item)}
-                          className="h-7 text-xs text-muted-foreground hover:text-rose-400"
-                          title="Cancel Batch"
+                          size="icon"
+                          onClick={() => handleDeleteEntry(item)}
+                          className="h-7 w-7 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                          title="Delete Production Batch"
                         >
-                          <Ban className="h-3.5 w-3.5 mr-1" /> Cancel
+                          <Trash2 className="h-3.5 w-3.5" />
                         </Button>
-                      )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))

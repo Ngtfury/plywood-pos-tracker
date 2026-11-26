@@ -19,9 +19,11 @@ import {
   ShieldCheck,
   Building2,
   Wallet,
+  Landmark,
 } from "lucide-react";
 import { BusinessEntitySelector } from "@/components/erp/BusinessEntitySelector";
-import { getPnlSummary, getVouchers, getBusinessEntities } from "@/lib/db/accounting";
+import { getPnlSummary, getVouchers, getBusinessEntities, getBankAccounts } from "@/lib/db/accounting";
+import type { BankAccount } from "@/lib/db/erp";
 import {
   getCompanyOpeningBalance,
   calculateCompanyCurrentBalance,
@@ -50,6 +52,7 @@ export function Dashboard() {
   const setBalanceModalOpen = useStore(s => s.setBalanceModalOpen);
 
   const [companyCurrentBalance, setCompanyCurrentBalance] = useState<number>(0);
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [entityName, setEntityName] = useState<string>("All Companies");
 
   // Accounting P&L and Balance Sheet Metrics
@@ -104,10 +107,12 @@ export function Dashboard() {
       }),
       getCompanyOpeningBalance(selectedEntityId),
       getBusinessEntities(),
+      getBankAccounts(selectedEntityId || undefined),
     ])
-      .then(([txns, pnl, unpaidPur, unpaidSal, opBal, entList]) => {
+      .then(([txns, pnl, unpaidPur, unpaidSal, opBal, entList, bnkList]) => {
         setAllTransactions(txns);
         setPnlData(pnl);
+        setBankAccounts(bnkList.filter((b) => b.is_active !== false));
 
         const payables = unpaidPur.reduce((s: number, v: any) => s + (Number(v.balance_due) || 0), 0);
         const receivables = unpaidSal.reduce((s: number, v: any) => s + (Number(v.balance_due) || 0), 0);
@@ -411,44 +416,73 @@ export function Dashboard() {
         )}
       </div>
 
-      {/* Company Live Cash Balance Banner */}
-      <div className="p-3.5 rounded-xl border border-border/80 bg-gradient-to-r from-card via-card to-primary/5 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-primary/10 text-primary">
-            <Wallet className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="font-semibold text-sm">Company Current Balance</h3>
-              <Badge variant="outline" className="border-primary/40 text-primary bg-primary/10 text-[10px]">
-                {entityName}
-              </Badge>
+      {/* Separate Cash in Hand & Bank Balance Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <Card className="border-emerald-500/30 bg-gradient-to-br from-card to-emerald-950/10 shadow-sm">
+          <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+            <div>
+              <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                <Wallet className="h-4 w-4 text-emerald-400" />
+                Cash in Hand (Live)
+              </CardTitle>
+              <span className="text-[11px] text-muted-foreground">{entityName}</span>
             </div>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Cash collected from sales &amp; incomes, minus operational expenses &amp; cash payouts.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-4">
-          <div className="text-right">
-            <div className="text-xs text-muted-foreground">Available Cash</div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setBalanceModalOpen(true)}
+              className="h-7 text-[11px] border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 cursor-pointer"
+            >
+              Set / Add Cash
+            </Button>
+          </CardHeader>
+          <CardContent>
             <div
               className={`text-2xl font-bold font-mono ${
                 companyCurrentBalance >= 0 ? "text-emerald-400" : "text-rose-400"
               }`}
             >
-              ₹{companyCurrentBalance.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+              ₹{companyCurrentBalance.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
             </div>
-          </div>
-          <Button
-            size="sm"
-            onClick={() => setBalanceModalOpen(true)}
-            className="h-8 text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer"
-          >
-            Adjust / Add Balance
-          </Button>
-        </div>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Physical cash only (excludes bank statement reconciliation)
+            </p>
+          </CardContent>
+        </Card>
+
+        {bankAccounts.map((bank) => (
+          <Card key={bank.id} className="border-blue-500/30 bg-gradient-to-br from-card to-blue-950/10 shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+              <div className="min-w-0 pr-2">
+                <CardTitle className="text-sm font-semibold flex items-center gap-2 truncate">
+                  <Landmark className="h-4 w-4 text-blue-400 shrink-0" />
+                  <span className="truncate">{bank.bank_name}</span>
+                </CardTitle>
+                <span className="text-[11px] font-mono text-muted-foreground">A/c: {bank.account_no}</span>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setBalanceModalOpen(true)}
+                className="h-7 text-[11px] border-blue-500/30 text-blue-400 hover:bg-blue-500/10 cursor-pointer shrink-0"
+              >
+                Adjust Bank
+              </Button>
+            </CardHeader>
+            <CardContent>
+              <div
+                className={`text-2xl font-bold font-mono ${
+                  Number(bank.current_balance || 0) >= 0 ? "text-blue-400" : "text-rose-400"
+                }`}
+              >
+                ₹{Number(bank.current_balance || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Separate bank balance ({bank.business_entity_name || "General"})
+              </p>
+            </CardContent>
+          </Card>
+        ))}
       </div>
 
       {/* 4-Card Executive Financial Summary with Distinguished Credit Box */}

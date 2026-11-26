@@ -36,7 +36,8 @@ import {
   getCompanyOpeningBalance,
   calculateCompanyCurrentBalance,
 } from "@/lib/db/queries";
-import { getBusinessEntities } from "@/lib/db/accounting";
+import { getBusinessEntities, getBankAccounts } from "@/lib/db/accounting";
+import type { BankAccount } from "@/lib/db/erp";
 
 interface NavGroup {
   label: string;
@@ -116,7 +117,8 @@ export function Sidebar() {
   const { lock } = useUserAuth();
 
   const [currentBal, setCurrentBal] = useState<number>(0);
-  const [companyLabel, setCompanyLabel] = useState<string>("Balance");
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+  const [companyLabel, setCompanyLabel] = useState<string>("Cash in Hand");
 
   // Track which groups are collapsed (collapsed by default for Accounting/Banking/Reports)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({
@@ -137,17 +139,19 @@ export function Sidebar() {
       getBusinessEntities(),
       getTransactions(),
       getCompanyOpeningBalance(selectedEntityId),
+      getBankAccounts(selectedEntityId || undefined),
     ])
-      .then(([entities, txns, opBal]) => {
+      .then(([entities, txns, opBal, banks]) => {
         if (!isSubscribed) return;
         if (selectedEntityId) {
           const found = entities.find((e: any) => e.id === selectedEntityId);
-          setCompanyLabel(found ? found.name : "Balance");
+          setCompanyLabel(found ? `${found.name} Cash` : "Cash in Hand");
         } else {
-          setCompanyLabel("Total Balance");
+          setCompanyLabel("Cash in Hand");
         }
         const bal = calculateCompanyCurrentBalance(txns, opBal, selectedEntityId);
         setCurrentBal(bal.currentBalance);
+        setBankAccounts(banks.filter((b) => b.is_active !== false));
       })
       .catch(console.error);
 
@@ -182,12 +186,12 @@ export function Sidebar() {
         </button>
         <button
           onClick={() => setBalanceModalOpen(true)}
-          className="flex w-full items-center justify-between rounded-md bg-secondary/80 border border-border/80 px-3 py-2 text-xs font-semibold text-foreground hover:bg-secondary transition-all hover:border-primary/50 group"
-          title="Click to view, set or add to company current balance"
+          className="flex w-full items-center justify-between rounded-md bg-secondary/80 border border-border/80 px-3 py-2 text-xs font-semibold text-foreground hover:bg-secondary transition-all hover:border-primary/50 group cursor-pointer"
+          title="Click to view, set or add Cash in Hand balance"
         >
           <span className="flex items-center gap-2 truncate pr-2">
-            <Wallet className="h-4 w-4 text-primary shrink-0 group-hover:scale-110 transition-transform" />
-            <span className="truncate max-w-[85px] text-left">{companyLabel}</span>
+            <Wallet className="h-4 w-4 text-emerald-400 shrink-0 group-hover:scale-110 transition-transform" />
+            <span className="truncate max-w-[95px] text-left">{companyLabel}</span>
           </span>
           <span
             className={cn(
@@ -197,6 +201,35 @@ export function Sidebar() {
           >
             ₹{currentBal.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
           </span>
+        </button>
+
+        {/* Separate Live Bank Balances */}
+        <button
+          onClick={() => setBalanceModalOpen(true)}
+          className="flex flex-col w-full gap-1 rounded-md bg-blue-950/20 border border-blue-500/20 px-3 py-2 text-xs text-foreground hover:bg-blue-950/35 transition-all hover:border-blue-500/40 cursor-pointer"
+          title="Click to view, set or add Bank Account balances"
+        >
+          <div className="flex w-full items-center justify-between font-semibold">
+            <span className="flex items-center gap-2 text-[11px] text-blue-300">
+              <Landmark className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+              <span>Bank Balances</span>
+            </span>
+            <span className="font-mono font-bold text-xs text-blue-400">
+              ₹{bankAccounts.reduce((s, b) => s + (Number(b.current_balance) || 0), 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+            </span>
+          </div>
+          {bankAccounts.length > 0 && (
+            <div className="w-full space-y-0.5 pt-1 border-t border-blue-500/15">
+              {bankAccounts.slice(0, 3).map((b) => (
+                <div key={b.id} className="flex items-center justify-between text-[10px] text-muted-foreground">
+                  <span className="truncate max-w-[100px] text-left">{b.bank_name}</span>
+                  <span className="font-mono font-medium text-blue-300">
+                    ₹{Number(b.current_balance || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </button>
       </div>
 

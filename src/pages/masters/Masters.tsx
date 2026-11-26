@@ -22,13 +22,16 @@ import type { Employee, Partner, BankAccount, Account, BusinessEntity, UnitOfMea
 import {
   getEmployees,
   upsertEmployee,
+  deleteEmployee,
   getPartners,
   upsertPartner,
+  deletePartner,
   getBankAccounts,
   upsertBankAccount,
   deleteBankAccount,
   getAccounts,
   upsertAccount,
+  deleteAccount,
 } from "@/lib/db/accounting";
 import { 
   getBusinessEntities, 
@@ -157,17 +160,65 @@ export function Masters() {
   };
 
   const handleDeleteBank = async (bank: BankAccount) => {
-    if (!window.confirm(`Remove bank account "${bank.bank_name} (${bank.account_no})"? This is only allowed when it has no financial history.`)) {
+    if (!window.confirm(`Remove bank account "${bank.bank_name} (${bank.account_no})"?`)) {
       return;
     }
 
     try {
-      await deleteBankAccount(bank.id);
+      await deleteBankAccount(bank.id, false);
       const bnkList = await getBankAccounts();
       setBankAccounts(bnkList);
       triggerRefresh();
     } catch (err: any) {
-      alert(err?.message || "This bank account cannot be removed because it has financial history. Deactivate it instead.");
+      const force = window.confirm(
+        `${err?.message || "This bank account has financial history."}\n\nForce delete this bank account and remove its imported bank statements?`
+      );
+      if (!force) return;
+      try {
+        await deleteBankAccount(bank.id, true);
+        const bnkList = await getBankAccounts();
+        setBankAccounts(bnkList);
+        triggerRefresh();
+      } catch (forceErr: any) {
+        alert("Failed to delete bank account: " + (forceErr?.message || forceErr));
+      }
+    }
+  };
+
+  const handleDeleteEmployee = async (emp: Employee) => {
+    if (!window.confirm(`Delete employee "${emp.name}"?`)) return;
+    try {
+      await deleteEmployee(emp.id);
+      setEmployees(await getEmployees());
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Failed to delete employee: " + (err?.message || err));
+    }
+  };
+
+  const handleDeletePartner = async (ptr: Partner) => {
+    if (!window.confirm(`Delete partner "${ptr.name}"?`)) return;
+    try {
+      await deletePartner(ptr.id);
+      setPartners(await getPartners());
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Failed to delete partner: " + (err?.message || err));
+    }
+  };
+
+  const handleDeleteAccount = async (acc: Account) => {
+    if (acc.is_system) {
+      alert("Protected core system accounts cannot be deleted.");
+      return;
+    }
+    if (!window.confirm(`Delete ledger account "${acc.name}"?`)) return;
+    try {
+      await deleteAccount(acc.id);
+      setAccounts(await getAccounts());
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Failed to delete account: " + (err?.message || err));
     }
   };
 
@@ -353,6 +404,15 @@ export function Masters() {
                       >
                         <Pencil className="h-3.5 w-3.5 text-blue-400" />
                       </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleDeleteEmployee(emp)}
+                        className="h-7 w-7 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                        title="Delete employee"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -422,6 +482,15 @@ export function Masters() {
                         title="Edit partner"
                       >
                         <Pencil className="h-3.5 w-3.5 text-blue-400" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleDeletePartner(ptr)}
+                        className="h-7 w-7 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                        title="Delete partner"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -602,6 +671,17 @@ export function Masters() {
                       >
                         <Pencil className="h-3.5 w-3.5 text-blue-400" />
                       </Button>
+                      {!acc.is_system && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleDeleteAccount(acc)}
+                          className="h-7 w-7 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                          title="Delete custom account"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}

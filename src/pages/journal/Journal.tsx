@@ -25,6 +25,7 @@ import {
   insertJournalEntry,
   updateJournalEntry,
   cancelJournalEntry,
+  deleteJournalEntry,
   getAccounts,
 } from "@/lib/db/accounting";
 
@@ -235,6 +236,19 @@ export function Journal() {
     }
   };
 
+  const handleDelete = async (j: JournalEntry) => {
+    if (!window.confirm(`Permanently delete journal entry "${j.narration}"?`)) return;
+    try {
+      setEntries((prev) => prev.filter((e) => e.id !== j.id));
+      await deleteJournalEntry(j.id);
+      triggerRefresh();
+      await loadData();
+    } catch (err: any) {
+      alert("Error deleting journal entry: " + (err.message || err));
+      loadData();
+    }
+  };
+
   const totalPostedDebit = useMemo(() => {
     return entries.reduce((s, e) => s + (Number(e.total_debit) || 0), 0);
   }, [entries]);
@@ -373,30 +387,41 @@ export function Journal() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                          {j.status === "posted" ? (
-                            <div className="flex items-center justify-end gap-1">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => openEditJournal(j)}
-                                className="h-7 text-xs text-muted-foreground hover:text-primary"
-                                title="Edit Journal Entry"
-                              >
-                                <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleCancel(j)}
-                                className="h-7 text-xs text-muted-foreground hover:text-rose-400"
-                                title="Cancel Journal Entry"
-                              >
-                                <Ban className="h-3.5 w-3.5 mr-1" /> Cancel
-                              </Button>
-                            </div>
-                          ) : (
-                            <span className="text-[11px] text-muted-foreground italic">Cancelled</span>
-                          )}
+                          <div className="flex items-center justify-end gap-1">
+                            {j.status === "posted" ? (
+                              <>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => openEditJournal(j)}
+                                  className="h-7 text-xs text-muted-foreground hover:text-primary"
+                                  title="Edit Journal Entry"
+                                >
+                                  <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleCancel(j)}
+                                  className="h-7 text-xs text-muted-foreground hover:text-amber-400"
+                                  title="Cancel Journal Entry"
+                                >
+                                  <Ban className="h-3.5 w-3.5 mr-1" /> Cancel
+                                </Button>
+                              </>
+                            ) : (
+                              <span className="text-[11px] text-muted-foreground italic mr-1">Cancelled</span>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleDelete(j)}
+                              className="h-7 w-7 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                              title="Delete Journal Entry"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
 

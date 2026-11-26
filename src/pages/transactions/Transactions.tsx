@@ -10,7 +10,7 @@ import { getBankAccounts } from "@/lib/db/accounting";
 import type { BankAccount } from "@/lib/db/erp";
 import { useStore } from "@/store";
 import { Button } from "@/components/ui/button";
-import { Pencil, Trash2, Wallet } from "lucide-react";
+import { Pencil, Trash2, Wallet, Landmark } from "lucide-react";
 import { 
   Table, 
   TableBody, 
@@ -79,6 +79,19 @@ export function Transactions() {
     }
   };
 
+  const handleDeleteSingle = async (txn: Transaction) => {
+    if (!window.confirm(`Delete this ${txn.type === "IN" ? "income" : "expense"} transaction (₹${Number(txn.amount).toLocaleString()})?`)) return;
+    setIsDeleting(true);
+    try {
+      await deleteTransactions([txn.id]);
+      triggerRefresh();
+    } catch (err: any) {
+      alert("Failed to delete transaction: " + (err?.message || err));
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -92,19 +105,34 @@ export function Transactions() {
           <Button
             onClick={() => setBalanceModalOpen(true)}
             variant="outline"
-            className="h-9 px-3 gap-2 border-primary/30 hover:border-primary bg-primary/5 hover:bg-primary/10 cursor-pointer text-xs font-semibold"
-            title="Click to view, set or add to company current balance"
+            className="h-9 px-3 gap-2 border-emerald-500/30 hover:border-emerald-500 bg-emerald-500/5 hover:bg-emerald-500/10 cursor-pointer text-xs font-semibold"
+            title="Click to manage Cash in Hand balance"
           >
-            <Wallet className="h-4 w-4 text-primary" />
-            <span className="text-muted-foreground">Balance:</span>
+            <Wallet className="h-4 w-4 text-emerald-400" />
+            <span className="text-muted-foreground">Cash in Hand:</span>
             <span
               className={`font-mono font-bold ${
-                currentBal >= 0 ? "text-emerald-500" : "text-rose-500"
+                currentBal >= 0 ? "text-emerald-400" : "text-rose-400"
               }`}
             >
               ₹{currentBal.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
             </span>
           </Button>
+          {bankAccounts.filter((b) => b.is_active).map((b) => (
+            <Button
+              key={b.id}
+              onClick={() => setBalanceModalOpen(true)}
+              variant="outline"
+              className="h-9 px-3 gap-1.5 border-blue-500/30 hover:border-blue-500 bg-blue-500/5 hover:bg-blue-500/10 cursor-pointer text-xs font-semibold"
+              title={`Manage ${b.bank_name} balance`}
+            >
+              <Landmark className="h-3.5 w-3.5 text-blue-400" />
+              <span className="text-muted-foreground">{b.bank_name}:</span>
+              <span className="font-mono font-bold text-blue-400">
+                ₹{Number(b.current_balance || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+              </span>
+            </Button>
+          ))}
 
           {selectedIds.size > 0 && (
             <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
@@ -271,14 +299,28 @@ export function Transactions() {
                     {txn.notes || "—"}
                   </TableCell>
                   <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setEditingTransaction(txn)}
-                      aria-label={`Edit ${txn.type === "IN" ? "income" : "expense"} transaction`}
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-blue-400 hover:text-blue-300 cursor-pointer"
+                        onClick={() => setEditingTransaction(txn)}
+                        aria-label={`Edit ${txn.type === "IN" ? "income" : "expense"} transaction`}
+                        title="Edit transaction"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-rose-400 cursor-pointer"
+                        onClick={() => handleDeleteSingle(txn)}
+                        aria-label={`Delete ${txn.type === "IN" ? "income" : "expense"} transaction`}
+                        title="Delete transaction"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))

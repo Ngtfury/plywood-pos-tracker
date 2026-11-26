@@ -33,7 +33,7 @@ import {
 import { getBankAccounts } from "@/lib/db/accounting";
 import type { BankAccount } from "@/lib/db/erp";
 import { useStore } from "@/store";
-import { CreditCard, Calendar, AlertCircle, Wallet } from "lucide-react";
+import { CreditCard, Calendar, AlertCircle, Wallet, Landmark } from "lucide-react";
 import { IosSpinner } from "@/components/ui/IosSpinner";
 
 interface QuickEntryModalProps {
@@ -154,11 +154,15 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
   const activeAmount = isCredit ? calcPaid : (parseFloat(amount) || 0);
   const selectedBankAccount = bankAccounts.find((bank) => bank.id === bankAccountId);
 
-  // Live balance calculation
-  const actualCashFlow = isCredit ? (parseFloat(paidNowAmount) || 0) : (parseFloat(amount) || 0);
-  const projectedBalance = type === "IN"
-    ? currentCompanyBalance + actualCashFlow
-    : currentCompanyBalance - actualCashFlow;
+  // Live balance calculation: ONLY cash portion alters Cash-in-Hand!
+  const projectedCashBalance = type === "IN"
+    ? currentCompanyBalance + receivedCash
+    : currentCompanyBalance - receivedCash;
+  const totalBankBalance = bankAccounts.filter((b) => b.is_active).reduce((s, b) => s + (Number(b.current_balance) || 0), 0);
+  const selectedBankLiveBalance = Number(selectedBankAccount?.current_balance || 0);
+  const projectedSelectedBankBalance = type === "IN"
+    ? selectedBankLiveBalance + receivedBank
+    : selectedBankLiveBalance - receivedBank;
 
   const handleBankAccountChange = async (id: string) => {
     setBankAccountId(id);
@@ -448,30 +452,69 @@ export function QuickEntryModal({ type, isOpen, onClose, initialTransaction = nu
         
         <form onSubmit={handleSubmit} className="flex flex-col gap-4 py-2">
           
-          {/* Live Company Current Balance Indicator */}
-          <div className="flex items-center justify-between px-3.5 py-2.5 rounded-lg border border-border/80 bg-muted/30 text-xs">
-            <div className="flex items-center gap-2">
-              <Wallet className="h-4 w-4 text-primary" />
-              <span className="text-muted-foreground font-medium">Company Balance:</span>
-              <span
-                className={`font-mono font-bold ${
-                  currentCompanyBalance >= 0 ? "text-emerald-500" : "text-rose-500"
-                }`}
-              >
-                ₹{currentCompanyBalance.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
-              </span>
-            </div>
-            {actualCashFlow > 0 && (
-              <div className="flex items-center gap-1.5 font-mono text-[11px]">
-                <span className={type === "IN" ? "text-emerald-500 font-semibold" : "text-rose-500 font-semibold"}>
-                  {type === "IN" ? "+" : "-"}₹{actualCashFlow.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+          {/* Separate Live Cash in Hand & Live Bank Balance Indicators */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div className="flex flex-col justify-between px-3.5 py-2.5 rounded-lg border border-border/80 bg-muted/30 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-muted-foreground font-medium">
+                  <Wallet className="h-3.5 w-3.5 text-emerald-400" />
+                  Cash in Hand:
                 </span>
-                <span className="text-muted-foreground">→</span>
-                <span className={`font-bold ${projectedBalance >= 0 ? "text-foreground" : "text-rose-500"}`}>
-                  ₹{projectedBalance.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                <span
+                  className={`font-mono font-bold ${
+                    currentCompanyBalance >= 0 ? "text-emerald-400" : "text-rose-400"
+                  }`}
+                >
+                  ₹{currentCompanyBalance.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
                 </span>
               </div>
-            )}
+              {receivedCash > 0 ? (
+                <div className="flex items-center justify-end gap-1.5 font-mono text-[11px] mt-1 pt-1 border-t border-border/50">
+                  <span className={type === "IN" ? "text-emerald-400 font-semibold" : "text-rose-400 font-semibold"}>
+                    {type === "IN" ? "+" : "-"}₹{receivedCash.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                  </span>
+                  <span className="text-muted-foreground">→</span>
+                  <span className={`font-bold ${projectedCashBalance >= 0 ? "text-foreground" : "text-rose-400"}`}>
+                    ₹{projectedCashBalance.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              ) : (
+                <div className="text-[10px] text-muted-foreground mt-1">
+                  Updates only for Cash payments
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-col justify-between px-3.5 py-2.5 rounded-lg border border-border/80 bg-muted/30 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-muted-foreground font-medium truncate">
+                  <Landmark className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+                  <span className="truncate">
+                    {selectedBankAccount ? selectedBankAccount.bank_name : `Bank Balance (${bankAccounts.filter((b) => b.is_active).length})`}
+                  </span>
+                </span>
+                <span className="font-mono font-bold text-blue-400 shrink-0">
+                  ₹{(selectedBankAccount ? selectedBankLiveBalance : totalBankBalance).toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                </span>
+              </div>
+              {receivedBank > 0 && selectedBankAccount ? (
+                <div className="flex items-center justify-end gap-1.5 font-mono text-[11px] mt-1 pt-1 border-t border-border/50">
+                  <span className={type === "IN" ? "text-emerald-400 font-semibold" : "text-rose-400 font-semibold"}>
+                    {type === "IN" ? "+" : "-"}₹{receivedBank.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                  </span>
+                  <span className="text-muted-foreground">→</span>
+                  <span className={`font-bold ${projectedSelectedBankBalance >= 0 ? "text-foreground" : "text-rose-400"}`}>
+                    ₹{projectedSelectedBankBalance.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              ) : (
+                <div className="text-[10px] text-muted-foreground mt-1 truncate">
+                  {bankAccounts.filter((b) => b.is_active).length > 0
+                    ? bankAccounts.filter((b) => b.is_active).map((b) => `${b.bank_name}: ₹${Number(b.current_balance || 0).toLocaleString("en-IN")}`).join(" • ")
+                    : "No bank accounts added"}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Credit Toggle Pill */}

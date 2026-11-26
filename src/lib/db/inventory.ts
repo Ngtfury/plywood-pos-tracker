@@ -61,6 +61,19 @@ export async function toggleBusinessEntityActive(id: string, is_active: boolean)
   if (error) throw error;
 }
 
+export async function deleteBusinessEntity(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.from('business_entities').delete().eq('id', id);
+  if (error) throw error;
+  await recordAuditLog({
+    entity_type: 'business_entities',
+    record_id: id,
+    old_values: null,
+    new_values: { deleted: true },
+    action: 'DELETE',
+  });
+}
+
 // ---- Products ----
 
 export async function getProducts(category?: string): Promise<Product[]> {
@@ -102,6 +115,19 @@ export async function upsertProduct(data: Partial<Product>, oldData?: Partial<Pr
   });
 
   return id;
+}
+
+export async function deleteProduct(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.from('products').delete().eq('id', id);
+  if (error) throw error;
+  await recordAuditLog({
+    entity_type: 'products',
+    record_id: id,
+    old_values: null,
+    new_values: { deleted: true },
+    action: 'DELETE',
+  });
 }
 
 // ---- Product Variants ----
@@ -152,6 +178,19 @@ export async function upsertProductVariant(data: Partial<ProductVariant>, oldDat
   });
 
   return id;
+}
+
+export async function deleteProductVariant(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.from('product_variants').delete().eq('id', id);
+  if (error) throw error;
+  await recordAuditLog({
+    entity_type: 'product_variants',
+    record_id: id,
+    old_values: null,
+    new_values: { deleted: true },
+    action: 'DELETE',
+  });
 }
 
 // ---- Units of Measurement ----

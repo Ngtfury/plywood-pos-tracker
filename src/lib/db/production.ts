@@ -85,3 +85,9 @@ export async function cancelProductionEntry(id: string): Promise<void> {
     .eq('id', id);
   if (error) throw error;
 }
+
+export async function deleteProductionEntry(id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.rpc('delete_production_entry_atomic', { p_production_id: id });
+  if (error) throw new Error(error.message);
+}

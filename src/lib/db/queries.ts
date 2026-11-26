@@ -477,10 +477,40 @@ export async function deleteTransactions(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   const supabase = getSupabase();
   const { error } = await supabase.rpc('delete_transactions_atomic', { p_ids: ids });
-  if (error) {
-    console.error('Error deleting transactions:', error);
-    throw error;
+  if (!error) return;
+
+  if (error.code === 'PGRST202' || error.message?.includes('not find')) {
+    const { data: txns } = await supabase.from('transactions').select('id, custom_data').in('id', ids);
+    const affectedBanks = Array.from(
+      new Set((txns || []).map((t: any) => t.custom_data?.bank_account_id).filter(Boolean))
+    );
+
+    await supabase
+      .from('bank_statement_transactions')
+      .update({ transaction_id: null, potential_duplicate_id: null })
+      .in('transaction_id', ids);
+    await supabase
+      .from('bank_statement_transactions')
+      .update({ potential_duplicate_id: null })
+      .in('potential_duplicate_id', ids);
+    await supabase.from('credit_payments').delete().in('transaction_id', ids);
+
+    const { error: delErr } = await supabase.from('transactions').delete().in('id', ids);
+    if (delErr) {
+      console.error('Error deleting transactions:', delErr);
+      throw delErr;
+    }
+
+    for (const bankId of affectedBanks) {
+      try {
+        await supabase.rpc('refresh_bank_account_balance', { p_bank_account_id: bankId });
+      } catch {}
+    }
+    return;
   }
+
+  console.error('Error deleting transactions:', error);
+  throw error;
 }
 
 export async function deleteCategories(ids: string[]): Promise<void> {
@@ -1070,9 +1100,9 @@ export async function setCompanyOpeningBalance(amount: number, companyId?: strin
 }
 
 /**
- * Pure calculation function to determine the company's live current balance.
- * Uses exact immediate cashflow (got cash / paid cash) for every transaction,
- * ensuring partial upfront payments and credit settlements are accurately reflected.
+ * Pure calculation function to determine the company's live Cash-in-Hand balance.
+ * Strictly excludes Bank Reconciliation statement imports and pure Bank Transfers
+ * so Cash-in-Hand ONLY tracks actual physical cash received/paid (e.g. Quick Income/Expense cash portions).
  */
 export function calculateCompanyCurrentBalance(
   transactions: Transaction[],
@@ -1083,6 +1113,11 @@ export function calculateCompanyCurrentBalance(
   let totalCashOut = 0;
 
   for (const t of transactions) {
+    // Bank statement reconciliation transactions belong strictly to Bank Balance, never Cash-in-Hand
+    if (t.custom_data?.is_statement_imported === true) {
+      continue;
+    }
+
     // If companyId filter is active, check if transaction matches
     if (companyId && companyId !== 'ALL') {
       const txnBizId = t.business_entity_id || t.custom_data?.business_entity_id;
@@ -1092,8 +1127,20 @@ export function calculateCompanyCurrentBalance(
       }
     }
 
-    // Immediate cashflow moved: for partial payments, this is exactly the upfront got cash (paid_amount)
-    const cashMoved = Number(t.paid_amount != null ? t.paid_amount : t.amount) || 0;
+    const paid = Number(t.paid_amount != null ? t.paid_amount : t.amount) || 0;
+    const custom = t.custom_data || {};
+
+    let cashMoved = 0;
+    if (custom.cash_amount != null) {
+      cashMoved = Number(custom.cash_amount) || 0;
+    } else if (custom.payment_method === 'bank_transfer_only') {
+      cashMoved = 0;
+    } else {
+      const bankAmt = Number(custom.bank_amount) || 0;
+      cashMoved = Math.max(0, paid - bankAmt);
+    }
+
+    if (cashMoved <= 0) continue;
 
     if (t.type === 'IN') {
       totalCashIn += cashMoved;
