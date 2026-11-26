@@ -104,11 +104,13 @@ export async function getBankStatementTransactions(params: {
 }
 
 /**
- * Cloud Duplicate Detection Engine:
- * Checks BOTH:
- *  1) Existing cloud `bank_statement_transactions` for this bank account
- *     (matching exact date, direction, amount, and particulars/ref or exact cloud entry).
- *  2) Existing cloud `transactions` matching exact date, cash/bank amount, and direction.
+ * Cloud Duplicate Detection Engine (Strictly Per-Bank):
+ * Checks ONLY records linked to `params.bankAccountId`:
+ *  1) Existing cloud `bank_statement_transactions` for THIS bank account
+ *     (matching exact date, direction, amount, and particulars/reference).
+ *  2) Existing manual ledger `transactions` assigned to THIS bank account
+ *     (excluding statement-imported transactions already covered by Check 1,
+ *      and NEVER matching Cash-only or other banks' transactions).
  */
 export async function findDuplicateTransaction(params: {
   bankAccountId: string;
@@ -127,7 +129,7 @@ export async function findDuplicateTransaction(params: {
   const queryStart = shiftIsoDate(targetDate, -1);
   const queryEnd = shiftIsoDate(targetDate, 1);
 
-  // 1. Check cloud bank statements already stored for this bank account
+  // 1. Check cloud bank statements strictly for THIS bank account
   const { data: existingStmts } = await supabase
     .from('bank_statement_transactions')
     .select('id, txn_date, description, reference, reference_no, debit_amount, credit_amount, transaction_id, review_status')
@@ -153,10 +155,11 @@ export async function findDuplicateTransaction(params: {
       const stDesc = (st.description || '').trim().toLowerCase();
       const stRef = ((st.reference || st.reference_no) || '').trim().toLowerCase();
 
-      const sameParticulars = cleanParticulars && stDesc && stDesc === cleanParticulars;
-      const sameRef = cleanRef && stRef && stRef === cleanRef;
+      const sameDesc = Boolean(cleanParticulars && stDesc && cleanParticulars === stDesc);
+      const sameRef = Boolean(cleanRef && stRef && cleanRef === stRef);
+      const bothBlank = !cleanParticulars && !stDesc && !cleanRef && !stRef;
 
-      if (sameParticulars || sameRef || st.review_status !== 'dismissed') {
+      if (sameDesc || sameRef || bothBlank) {
         return {
           transactionId: st.transaction_id || null,
           source: 'CLOUD_STATEMENT',
@@ -166,11 +169,12 @@ export async function findDuplicateTransaction(params: {
     }
   }
 
-  // 2. Check existing ledger transactions
+  // 2. Check manual ledger transactions assigned specifically to THIS bank account
   const { data: txns, error } = await supabase
     .from('transactions')
     .select('*')
     .eq('type', params.type)
+    .eq('custom_data->>bank_account_id', params.bankAccountId)
     .gte('date', `${queryStart}T00:00:00Z`)
     .lte('date', `${queryEnd}T23:59:59Z`);
 
@@ -179,19 +183,21 @@ export async function findDuplicateTransaction(params: {
   }
 
   for (const t of txns) {
+    if (t.custom_data?.is_statement_imported === true) continue;
     const tDate = normalizeDateKey(t.date);
     if (tDate !== targetDate) continue;
 
-    const txnAmount = Number(t.paid_amount != null ? t.paid_amount : t.amount);
+    const txnAmount = Number(
+      t.custom_data?.bank_amount != null
+        ? t.custom_data.bank_amount
+        : (t.paid_amount != null ? t.paid_amount : t.amount)
+    );
     if (Math.abs(txnAmount - params.amount) < 0.01) {
-      const bankId = t.custom_data?.bank_account_id;
-      if (!bankId || bankId === params.bankAccountId) {
-        return {
-          transactionId: t.id,
-          source: 'LEDGER_TXN',
-          reason: `Matches existing Ledger Transaction #${t.id.slice(-6)} on ${targetDate} for ₹${params.amount.toLocaleString()} (${t.notes || t.description || 'No description'})`,
-        };
-      }
+      return {
+        transactionId: t.id,
+        source: 'LEDGER_TXN',
+        reason: `Matches existing Bank Transaction #${t.id.slice(-6)} on ${targetDate} for ₹${params.amount.toLocaleString()} (${t.notes || t.description || 'No description'})`,
+      };
     }
   }
 
@@ -576,12 +582,17 @@ export async function importBankStatementBatch(params: {
     supabase
       .from('transactions')
       .select('id, type, amount, paid_amount, total_amount, date, description, notes, custom_data')
+      .eq('custom_data->>bank_account_id', params.bankAccountId)
       .gte('date', `${minDate}T00:00:00Z`)
       .lte('date', `${maxDate}T23:59:59Z`),
   ]);
 
   const cloudStmtsList = existingCloudStmts || [];
-  const existingList = existingTxns || [];
+  const existingList = (existingTxns || []).filter(
+    (t) =>
+      t.custom_data?.bank_account_id === params.bankAccountId &&
+      t.custom_data?.is_statement_imported !== true
+  );
 
   const txnsToInsert: any[] = [];
   const stmtRawRowsToInsert: any[] = [];
@@ -608,7 +619,7 @@ export async function importBankStatementBatch(params: {
     const rowParticulars = (row.particulars || '').trim().toLowerCase();
     const rowRef = (row.chequeNo || '').trim().toLowerCase();
 
-    // Check 1: Exact or same-date/amount already present in CLOUD `bank_statement_transactions`
+    // Check 1: Strictly per-bank cloud `bank_statement_transactions` match (same date + amount + particulars/reference)
     const matchedCloudStmt = cloudStmtsList.find((st) => {
       const stDate = normalizeDateKey(st.txn_date);
       if (stDate !== formattedDate) return false;
@@ -617,25 +628,27 @@ export async function importBankStatementBatch(params: {
       if (stType !== type) return false;
       const stAmt = stIsOut ? Number(st.debit_amount) : Number(st.credit_amount);
       if (Math.abs(stAmt - cashAmount) >= 0.01) return false;
-      if (st.review_status === 'dismissed') {
-        const stDesc = (st.description || '').trim().toLowerCase();
-        const stRef = ((st.reference || st.reference_no) || '').trim().toLowerCase();
-        return (rowParticulars && stDesc === rowParticulars) || (rowRef && stRef === rowRef);
-      }
-      return true;
+
+      const stDesc = (st.description || '').trim().toLowerCase();
+      const stRef = ((st.reference || st.reference_no) || '').trim().toLowerCase();
+      const sameDesc = Boolean(rowParticulars && stDesc && rowParticulars === stDesc);
+      const sameRef = Boolean(rowRef && stRef && rowRef === stRef);
+      const bothBlank = !rowParticulars && !stDesc && !rowRef && !stRef;
+
+      return sameDesc || sameRef || bothBlank;
     });
 
-    // Check 2: Existing ledger transaction on exact same date & amount
+    // Check 2: Strictly per-bank manual Quick Entry / Ledger transaction match (never checks cash or other banks)
     const matchedTxn = existingList.find((t) => {
       if (t.type !== type) return false;
       const tDate = normalizeDateKey(t.date);
       if (tDate !== formattedDate) return false;
-      const tAmt = Number(t.paid_amount != null ? t.paid_amount : t.amount);
-      if (Math.abs(tAmt - cashAmount) >= 0.01) return false;
-
-      const bId = t.custom_data?.bank_account_id;
-      if (bId && bId !== params.bankAccountId) return false;
-      return true;
+      const tAmt = Number(
+        t.custom_data?.bank_amount != null
+          ? t.custom_data.bank_amount
+          : (t.paid_amount != null ? t.paid_amount : t.amount)
+      );
+      return Math.abs(tAmt - cashAmount) < 0.01;
     });
 
     const stmtId = `bst_${batchTimestamp}_${i}_${Math.floor(Math.random() * 1000)}`;

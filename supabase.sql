@@ -2415,12 +2415,15 @@ BEGIN
             RAISE EXCEPTION 'Bank account has financial history and cannot be deleted. Deactivate or force-delete it instead.';
         END IF;
     ELSE
-        -- Force cleanup of linked statement entries & unlink references
+        -- Force cleanup of linked statement entries, imported statement transactions & unlink manual references
         DELETE FROM public.bank_reconciliation_matches
         WHERE bank_statement_txn_id IN (
             SELECT id FROM public.bank_statement_transactions WHERE bank_account_id = p_bank_account_id
         );
         DELETE FROM public.bank_statement_transactions WHERE bank_account_id = p_bank_account_id;
+        DELETE FROM public.transactions
+        WHERE custom_data->>'bank_account_id' = p_bank_account_id
+          AND (custom_data->>'is_statement_imported')::BOOLEAN IS TRUE;
         UPDATE public.vouchers SET bank_account_id = NULL WHERE bank_account_id = p_bank_account_id;
         UPDATE public.salary_records SET bank_account_id = NULL WHERE bank_account_id = p_bank_account_id;
         UPDATE public.transactions

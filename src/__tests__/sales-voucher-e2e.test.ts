@@ -486,6 +486,64 @@ runTest("Cash-in-Hand strictly ignores bank statement imports and pure bank tran
   assert.equal(res.currentBalance, 9000);
 });
 
+runTest("BRS duplicate matching is strictly scoped per-bank (never matches cash or other/deleted banks)", () => {
+  function findPerBankMatch(
+    targetBankId: string,
+    row: { date: string; amount: number; type: "IN" | "OUT"; particulars: string; ref?: string },
+    cloudStatementsForTargetBank: any[],
+    manualTxnsForTargetBank: any[]
+  ) {
+    const rowDesc = row.particulars.trim().toLowerCase();
+    const rowRef = (row.ref || "").trim().toLowerCase();
+
+    const cloudMatch = cloudStatementsForTargetBank.find((st) => {
+      if (st.bank_account_id !== targetBankId) return false;
+      if (st.txn_date.slice(0, 10) !== row.date) return false;
+      const stIsOut = Number(st.debit_amount) > 0;
+      const stType = stIsOut ? "OUT" : "IN";
+      if (stType !== row.type) return false;
+      const stAmt = stIsOut ? Number(st.debit_amount) : Number(st.credit_amount);
+      if (Math.abs(stAmt - row.amount) >= 0.01) return false;
+      const stDesc = (st.description || "").trim().toLowerCase();
+      const stRef = (st.reference || "").trim().toLowerCase();
+      return (rowDesc && stDesc === rowDesc) || (rowRef && stRef === rowRef);
+    });
+    if (cloudMatch) return "CLOUD_STATEMENT";
+
+    const txnMatch = manualTxnsForTargetBank.find((t) => {
+      if (t.custom_data?.bank_account_id !== targetBankId) return false;
+      if (t.custom_data?.is_statement_imported === true) return false;
+      if (t.type !== row.type || t.date.slice(0, 10) !== row.date) return false;
+      const tAmt = Number(t.custom_data?.bank_amount ?? t.paid_amount ?? t.amount);
+      return Math.abs(tAmt - row.amount) < 0.01;
+    });
+    return txnMatch ? "LEDGER_TXN" : null;
+  }
+
+  const allCloudStatements = [
+    { bank_account_id: "bnk_old", txn_date: "2026-11-26", debit_amount: 5000, credit_amount: 0, description: "NEFT TO SUPPLIER" },
+  ];
+  const allLedgerTxns = [
+    // Orphaned / Cash-only transaction with no bank_account_id
+    { id: "txn_cash", type: "OUT", date: "2026-11-26T12:00:00Z", amount: 5000, custom_data: { payment_method: "cash_only" } },
+    // Another bank's transaction
+    { id: "txn_other_bank", type: "OUT", date: "2026-11-26T12:00:00Z", amount: 5000, custom_data: { bank_account_id: "bnk_other", bank_amount: 5000 } },
+    // Target new bank manual entry
+    { id: "txn_target", type: "IN", date: "2026-11-26T12:00:00Z", amount: 12000, custom_data: { bank_account_id: "bnk_new", bank_amount: 12000 } },
+  ];
+
+  // Reconciling a brand-new bank should NOT flag Cash, other bank, or deleted old bank entries
+  assert.equal(
+    findPerBankMatch("bnk_new", { date: "2026-11-26", amount: 5000, type: "OUT", particulars: "NEFT TO SUPPLIER" }, allCloudStatements, allLedgerTxns),
+    null
+  );
+  // Reconciling the target bank SHOULD still catch a matching manual Quick Entry tied specifically to bnk_new
+  assert.equal(
+    findPerBankMatch("bnk_new", { date: "2026-11-26", amount: 12000, type: "IN", particulars: "CLIENT NEFT" }, allCloudStatements, allLedgerTxns),
+    "LEDGER_TXN"
+  );
+});
+
 // =========================================================================
 // SUMMARY
 // =========================================================================

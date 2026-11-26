@@ -868,7 +868,33 @@ export async function deleteBankAccount(id: string, force: boolean = false): Pro
     }
 
     if (hasHistory && force) {
+      // Collect statement-linked & imported transaction IDs for this bank BEFORE deleting statements
+      const [{ data: bankStmts }, { data: bankImportedTxns }] = await Promise.all([
+        supabase
+          .from('bank_statement_transactions')
+          .select('id, transaction_id, review_status')
+          .eq('bank_account_id', id),
+        supabase
+          .from('transactions')
+          .select('id, custom_data')
+          .eq('custom_data->>bank_account_id', id),
+      ]);
+
+      const importedTxnIds = Array.from(
+        new Set([
+          ...(bankStmts || [])
+            .filter((s: any) => s.transaction_id && s.review_status === 'auto_added')
+            .map((s: any) => s.transaction_id),
+          ...(bankImportedTxns || [])
+            .filter((t: any) => t.custom_data?.is_statement_imported === true)
+            .map((t: any) => t.id),
+        ])
+      );
+
       await supabase.from('bank_statement_transactions').delete().eq('bank_account_id', id);
+      if (importedTxnIds.length > 0) {
+        await supabase.from('transactions').delete().in('id', importedTxnIds);
+      }
       await supabase.from('vouchers').update({ bank_account_id: null }).eq('bank_account_id', id);
       await supabase.from('salary_records').update({ bank_account_id: null }).eq('bank_account_id', id);
     }
